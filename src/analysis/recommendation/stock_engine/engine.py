@@ -302,7 +302,7 @@ class StockRecommendationEngine:
         Uses hot stock lists and simple technical indicators to generate basic recommendations.
         """
         try:
-            from src.data_sources.akshare_api import get_hot_stocks, get_limit_up_pool
+            from src.data_sources.akshare_api import get_hot_stocks, get_limit_up_pool, get_all_stock_spot_map
             from src.data_sources.technical_analysis import (
                 calculate_rsi,
                 calculate_macd,
@@ -442,6 +442,60 @@ class StockRecommendationEngine:
                     quality_score = round(50 + (100 - latest_rsi) * 0.3 + min(change_pct, 5) * 2, 0)
                     quality_score = max(0, min(100, quality_score))
 
+                    # 尝试获取基本面数据（ROE、每股收益等）
+                    roe = None
+                    peg_ratio = None
+                    pe_ttm = None
+
+                    try:
+                        fina_df = ak.stock_financial_abstract_ths(symbol=code, indicator='按报告期')
+                        if fina_df is not None and not fina_df.empty and len(fina_df) > 0:
+                            # 取最新一期的ROE
+                            roe_col = '净资产收益率' if '净资产收益率' in fina_df.columns else None
+                            eps_col = '基本每股收益' if '基本每股收益' in fina_df.columns else None
+
+                            if roe_col:
+                                roe_val = fina_df[roe_col].iloc[0]
+                                if pd.notna(roe_val):
+                                    # 处理带%号的字符串
+                                    if isinstance(roe_val, str):
+                                        roe_val = roe_val.replace('%', '')
+                                    try:
+                                        roe = float(roe_val)
+                                    except (ValueError, TypeError):
+                                        pass
+
+                            # 估算PE：从实时行情中获取
+                            try:
+                                spot_map = get_all_stock_spot_map(cache_ttl_seconds=300)
+                                if spot_map and code in spot_map:
+                                    stock_info = spot_map[code]
+                                    pe_val = stock_info.get('市盈率-动态') or stock_info.get('市盈率')
+                                    if pe_val and pd.notna(pe_val):
+                                        try:
+                                            pe_ttm = float(pe_val)
+                                        except (ValueError, TypeError):
+                                            pass
+                            except Exception:
+                                pass
+
+                            # 估算PEG：PE / 净利润增长率
+                            if pe_ttm is not None and pe_ttm > 0:
+                                growth_col = '净利润同比增长率' if '净利润同比增长率' in fina_df.columns else None
+                                if growth_col:
+                                    growth_val = fina_df[growth_col].iloc[0]
+                                    if pd.notna(growth_val) and growth_val != False:
+                                        if isinstance(growth_val, str):
+                                            growth_val = growth_val.replace('%', '')
+                                        try:
+                                            growth = float(growth_val)
+                                            if growth > 0:
+                                                peg_ratio = round(pe_ttm / growth, 2)
+                                        except (ValueError, TypeError):
+                                            pass
+                    except Exception as e:
+                        pass  # 基本面数据获取失败不影响推荐
+
                     rec = {
                         'code': code,
                         'name': name,
@@ -464,8 +518,9 @@ class StockRecommendationEngine:
                             'volume_precursor': volume_precursor,
                             'main_inflow_5d': None,
                             'quality_score': quality_score,
-                            'roe': None,
-                            'peg_ratio': None,
+                            'roe': roe,
+                            'peg_ratio': peg_ratio,
+                            'pe_ttm': pe_ttm,
                             'pe_percentile': None,
                         },
                         'is_fallback': True,

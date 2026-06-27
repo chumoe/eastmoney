@@ -420,26 +420,59 @@ class FundRecommendationEngine:
                     if return_1y is not None:
                         returns_list.append(return_1y)
 
-                    # 估算年化波动率（基于不同周期收益率的离散程度）
+                    # 从不同区间收益率估算波动率和夏普比率
                     volatility_60d = None
                     sharpe_20d = None
                     sharpe_1y = None
+                    sortino_1y = None
                     max_drawdown_1y = None
 
-                    if len(returns_list) >= 3:
-                        returns_arr = np.array(returns_list, dtype=float)
-                        # 计算各周期收益率的标准差作为波动率估算
-                        vol_raw = np.std(returns_arr)
-                        # 估算60日波动率（年化的约1/3）
-                        volatility_60d = round(float(vol_raw * 0.8), 2)
+                    if len(returns_list) >= 2 and return_1y is not None:
+                        # 用年化收益率反推合理的波动率范围
+                        # 经验法则：
+                        # - 债券型基金：年化波动率 5%-10%，年化收益 3%-8%
+                        # - 混合型基金：年化波动率 15%-25%，年化收益 10%-30%
+                        # - 股票型/行业基金：年化波动率 25%-45%，年化收益 30%+
+                        annual_return = abs(return_1y)
+                        if annual_return > 200:
+                            # 超高收益（200%+），通常是集中持仓或行业beta
+                            base_vol = 40 + min((annual_return - 200) * 0.05, 15)
+                        elif annual_return > 100:
+                            # 高收益（100%-200%），行业主题基金
+                            base_vol = 30 + (annual_return - 100) * 0.1
+                        elif annual_return > 50:
+                            # 中高收益（50%-100%），偏股型
+                            base_vol = 22 + (annual_return - 50) * 0.16
+                        elif annual_return > 20:
+                            # 中等收益（20%-50%），平衡型
+                            base_vol = 15 + (annual_return - 20) * 0.23
+                        elif annual_return > 8:
+                            # 稳健收益（8%-20%），偏债混合
+                            base_vol = 8 + (annual_return - 8) * 0.54
+                        else:
+                            # 低收益（8%以下），债券型
+                            base_vol = max(3, annual_return * 0.8)
+
+                        # 60日波动率约为年化波动率的 sqrt(60/252) ≈ 49%
+                        volatility_60d = round(base_vol * 0.49, 2)
+
                         # 估算夏普比率（无风险利率按2%年化计）
-                        if volatility_60d and volatility_60d > 0:
-                            annualized_return = return_1y if return_1y else return_6m * 2
-                            sharpe_1y = round(float((annualized_return - 2) / (volatility_60d * 4 + 0.1)), 2)
+                        # 正常范围：0.5以下=差，1左右=良好，2+=优秀
+                        if base_vol > 0:
+                            sharpe_1y = round(float((return_1y - 2) / base_vol), 2)
                             sharpe_20d = round(float(sharpe_1y * 0.3), 2)
-                        # 估算最大回撤（基于最大回撤经验值约为波动率的2-3倍）
-                        if volatility_60d:
-                            max_drawdown_1y = round(float(-abs(volatility_60d) * 3 - 5), 2)
+                            # 索提诺比率（Sortino），通常约为夏普的1.3-1.8倍
+                            sortino_1y = round(float(sharpe_1y * 1.5), 2)
+
+                        # 估算最大回撤（经验值：约为年化波动率的 1.5-3 倍）
+                        # 收益越高，回撤往往越大（因为波动大）
+                        if return_1y > 50:
+                            max_dd = base_vol * 2.5
+                        elif return_1y > 0:
+                            max_dd = base_vol * 2.0
+                        else:
+                            max_dd = base_vol * 3.0
+                        max_drawdown_1y = round(min(max_dd, 70), 2)  # 最大不超过70%
 
                     score = 50.0
                     reasons = []
@@ -522,6 +555,7 @@ class FundRecommendationEngine:
                             'daily_growth': float(daily_growth) if pd.notna(daily_growth) else 0,
                             'sharpe_1y': sharpe_1y,
                             'sharpe_20d': sharpe_20d,
+                            'sortino_1y': sortino_1y,
                             'volatility_60d': volatility_60d,
                             'max_drawdown_1y': max_drawdown_1y,
                             'momentum_score': round(score, 1),
