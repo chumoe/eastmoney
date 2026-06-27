@@ -416,28 +416,25 @@ export const fetchMarketSectors = async (limit: number = 10): Promise<MarketSect
   return response.data;
 };
 
-export interface NorthboundFlowItem {
+export interface SouthboundFlowItem {
   date: string;
-  north_money: number;
   south_money: number;
-  hgt: number;
-  sgt: number;
 }
 
-export interface NorthboundFlowResponse {
+export interface SouthboundFlowResponse {
   today: {
-    north_money: number;
     south_money: number;
-    hgt: number;
-    sgt: number;
+    hk_sh_net: number;
+    hk_sz_net: number;
   };
-  recent: NorthboundFlowItem[];
+  recent: SouthboundFlowItem[];
   timestamp: string;
+  source?: string;
   message?: string;
 }
 
-export const fetchNorthboundFlow = async (): Promise<NorthboundFlowResponse> => {
-  const response = await api.get('/funds/market/northbound');
+export const fetchSouthboundFlow = async (): Promise<SouthboundFlowResponse> => {
+  const response = await api.get('/funds/market/southbound');
   return response.data;
 };
 
@@ -1030,7 +1027,7 @@ export const compareFunds = async (codes: string[]): Promise<{
 // --- Widget API ---
 
 import type {
-    NorthboundFlowData,
+    SouthboundFlowData,
     IndustryFlowData,
     SectorPerformanceData,
     TopListData,
@@ -1042,8 +1039,8 @@ import type {
     LayoutPresetsResponse,
 } from './widgets/types';
 
-export const fetchWidgetNorthboundFlow = async (days: number = 5): Promise<NorthboundFlowData> => {
-    const response = await api.get('/widgets/northbound-flow', { params: { days } });
+export const fetchWidgetSouthboundFlow = async (days: number = 5): Promise<SouthboundFlowData> => {
+    const response = await api.get('/widgets/southbound-flow', { params: { days } });
     return response.data;
 };
 

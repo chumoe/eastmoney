@@ -15,6 +15,7 @@ from src.storage.db import (
 )
 from src.scheduler.manager import scheduler_manager
 from src.analysis.fund import FundDiagnosis, RiskMetricsCalculator, DrawdownAnalyzer, FundComparison
+from src.analysis.widget_service import widget_service
 
 import asyncio
 
@@ -906,69 +907,47 @@ async def get_market_sectors(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/market/northbound")
-async def get_northbound_flow(current_user: User = Depends(get_current_user)):
+@router.get("/market/southbound")
+async def get_southbound_flow(current_user: User = Depends(get_current_user)):
     """
-    Get northbound capital flow (沪深港通).
+    Get southbound capital flow (港股通南向资金).
     """
     try:
-        loop = asyncio.get_running_loop()
-        
-        # Try TuShare first for northbound data
-        try:
-            from src.data_sources.data_source_manager import _get_tushare_pro
-            pro = _get_tushare_pro()
-            if pro:
-                # Get recent trading dates
-                from datetime import timedelta
-                end_date = datetime.now().strftime('%Y%m%d')
-                start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
-                
-                df = await loop.run_in_executor(
-                    None,
-                    lambda: pro.moneyflow_hsgt(start_date=start_date, end_date=end_date)
-                )
-                
-                if df is not None and not df.empty:
-                    df = df.sort_values('trade_date', ascending=False)
-                    
-                    # Today's data
-                    latest = df.iloc[0] if len(df) > 0 else None
-                    
-                    # Recent 5 days trend
-                    recent = []
-                    for _, row in df.head(10).iterrows():
-                        recent.append({
-                            'date': _safe_str(row.get('trade_date')),
-                            'north_money': _safe_float(row.get('north_money')),  # 北向资金
-                            'south_money': _safe_float(row.get('south_money')),  # 南向资金
-                            'hgt': _safe_float(row.get('hgt')),  # 沪股通
-                            'sgt': _safe_float(row.get('sgt')),  # 深股通
-                        })
-                    
-                    return {
-                        'today': {
-                            'north_money': _safe_float(latest.get('north_money')) if latest is not None else 0,
-                            'south_money': _safe_float(latest.get('south_money')) if latest is not None else 0,
-                            'hgt': _safe_float(latest.get('hgt')) if latest is not None else 0,
-                            'sgt': _safe_float(latest.get('sgt')) if latest is not None else 0,
-                        },
-                        'recent': recent,
-                        'timestamp': datetime.now().isoformat(),
-                    }
-        except Exception as e:
-            print(f"TuShare northbound failed: {e}")
-        
-        # Fallback: return empty data
+        data = await asyncio.to_thread(widget_service.get_southbound_flow, 10)
+
+        # 转换为市场概览页面需要的格式
+        today = {
+            'south_money': 0.0,
+            'hk_sh_net': 0.0,
+            'hk_sz_net': 0.0,
+        }
+        if data.get('latest'):
+            today['south_money'] = data['latest'].get('south_money', 0.0)
+            today['hk_sh_net'] = data['latest'].get('hk_sh_net', 0.0)
+            today['hk_sz_net'] = data['latest'].get('hk_sz_net', 0.0)
+
+        # 历史数据转换，单位统一为亿元
+        recent = []
+        for item in data.get('history', []):
+            recent.append({
+                'date': item.get('date', ''),
+                'south_money': item.get('south_money', 0.0),
+            })
+
         return {
-            'today': {'north_money': 0, 'south_money': 0, 'hgt': 0, 'sgt': 0},
-            'recent': [],
-            'timestamp': datetime.now().isoformat(),
-            'message': 'Northbound data unavailable',
+            'today': today,
+            'recent': recent,
+            'timestamp': data.get('updated_at', datetime.now().isoformat()),
+            'source': data.get('source', 'akshare'),
         }
     except Exception as e:
-        print(f"Error fetching northbound flow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error fetching southbound flow: {e}")
+        return {
+            'today': {'south_money': 0, 'hk_sh_net': 0, 'hk_sz_net': 0},
+            'recent': [],
+            'timestamp': datetime.now().isoformat(),
+            'message': 'Southbound data unavailable',
+        }
 
 
 @router.get("/market/sentiment")

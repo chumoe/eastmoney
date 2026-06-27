@@ -14,14 +14,14 @@ from src.storage.db import get_all_stocks
 router = APIRouter(prefix="/api/widgets", tags=["Widgets"])
 
 
-@router.get("/northbound-flow")
-async def get_widget_northbound_flow(days: int = 5):
-    """Get northbound capital flow data for widget."""
+@router.get("/southbound-flow")
+async def get_widget_southbound_flow(days: int = 5):
+    """Get southbound capital flow data for widget."""
     try:
-        data = await asyncio.to_thread(widget_service.get_northbound_flow, days)
+        data = await asyncio.to_thread(widget_service.get_southbound_flow, days)
         return sanitize_data(data)
     except Exception as e:
-        print(f"Error fetching northbound flow: {e}")
+        print(f"Error fetching southbound flow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

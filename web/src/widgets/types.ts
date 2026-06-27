@@ -9,7 +9,7 @@ import type { ComponentType } from 'react';
 // Widget types supported by the dashboard
 export type WidgetType =
     | 'market_indices'
-    | 'northbound_flow'
+    | 'southbound_flow'
     | 'industry_flow'
     | 'sector_performance'
     | 'top_list'
@@ -87,17 +87,17 @@ export interface WidgetProps {
 }
 
 // Widget data response types
-export interface NorthboundFlowData {
+export interface SouthboundFlowData {
     latest?: {
         date: string;
-        north_money: number;
-        hgt_net: number;
-        sgt_net: number;
+        south_money: number;
+        hk_sh_net: number;
+        hk_sz_net: number;
     };
     cumulative_5d: number;
     history: Array<{
         date: string;
-        north_money: number;
+        south_money: number;
     }>;
     updated_at: string;
     error?: string;

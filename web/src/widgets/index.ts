@@ -15,7 +15,7 @@ export { default as WidgetContainer, useWidgetData } from './WidgetContainer';
 
 // Widget Components
 export { default as MarketIndicesWidget } from './components/MarketIndicesWidget';
-export { default as NorthboundFlowWidget } from './components/NorthboundFlowWidget';
+export { default as SouthboundFlowWidget } from './components/SouthboundFlowWidget';
 export { default as IndustryFlowWidget } from './components/IndustryFlowWidget';
 export { default as SectorPerformanceWidget } from './components/SectorPerformanceWidget';
 export { default as TopListWidget } from './components/TopListWidget';

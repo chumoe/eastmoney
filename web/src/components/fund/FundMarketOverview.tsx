@@ -21,13 +21,13 @@ import BarChartIcon from '@mui/icons-material/BarChart';
 import {
   fetchMarketIndicesData,
   fetchMarketSectors,
-  fetchNorthboundFlow,
+  fetchSouthboundFlow,
   fetchMarketSentiment,
 } from '../../api';
 import type {
   MarketIndicesResponse,
   MarketSectorsResponse,
-  NorthboundFlowResponse,
+  SouthboundFlowResponse,
   MarketSentiment,
   MarketIndex,
   SectorItem,
@@ -36,7 +36,7 @@ import type {
 export default function FundMarketOverview() {
   const [indices, setIndices] = useState<MarketIndicesResponse | null>(null);
   const [sectors, setSectors] = useState<MarketSectorsResponse | null>(null);
-  const [northbound, setNorthbound] = useState<NorthboundFlowResponse | null>(null);
+  const [southbound, setSouthbound] = useState<SouthboundFlowResponse | null>(null);
   const [sentiment, setSentiment] = useState<MarketSentiment | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -45,15 +45,15 @@ export default function FundMarketOverview() {
     setLoading(true);
     setError(null);
     try {
-      const [indicesRes, sectorsRes, northboundRes, sentimentRes] = await Promise.all([
+      const [indicesRes, sectorsRes, southboundRes, sentimentRes] = await Promise.all([
         fetchMarketIndicesData().catch(() => null),
         fetchMarketSectors(5).catch(() => null),
-        fetchNorthboundFlow().catch(() => null),
+        fetchSouthboundFlow().catch(() => null),
         fetchMarketSentiment().catch(() => null),
       ]);
       setIndices(indicesRes);
       setSectors(sectorsRes);
-      setNorthbound(northboundRes);
+      setSouthbound(southboundRes);
       setSentiment(sentimentRes);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : '加载市场数据失败';
@@ -276,18 +276,18 @@ export default function FundMarketOverview() {
     );
   };
 
-  // 渲染北向资金
-  const renderNorthboundFlow = () => {
-    if (!northbound?.today) return null;
-    const { today } = northbound;
-    const isInflow = today.north_money > 0;
-    const color = isInflow ? '#22c55e' : '#ef4444';
+  // 渲染南向资金
+  const renderSouthboundFlow = () => {
+    if (!southbound?.today) return null;
+    const { today } = southbound;
+    const isInflow = today.south_money > 0;
+    const color = isInflow ? '#ef4444' : '#22c55e';
 
     return (
       <Box>
         <Box sx={{ textAlign: 'center', mb: 2 }}>
           <Typography sx={{ fontSize: '0.7rem', color: '#64748b', mb: 0.5 }}>
-            北向资金净流入
+            南向资金净流入
           </Typography>
           <Typography
             sx={{
@@ -297,7 +297,7 @@ export default function FundMarketOverview() {
               fontFamily: 'JetBrains Mono',
             }}
           >
-            {formatNumber(today.north_money)}
+            {formatNumber(today.south_money)}
           </Typography>
         </Box>
         <Grid container spacing={2}>
@@ -312,17 +312,17 @@ export default function FundMarketOverview() {
               }}
             >
               <Typography sx={{ fontSize: '0.65rem', color: '#92400e' }}>
-                沪股通
+                港股通(沪)
               </Typography>
               <Typography
                 sx={{
                   fontSize: '1rem',
                   fontWeight: 700,
-                  color: today.hgt > 0 ? '#22c55e' : '#ef4444',
+                  color: today.hk_sh_net > 0 ? '#ef4444' : '#22c55e',
                   fontFamily: 'JetBrains Mono',
                 }}
               >
-                {formatNumber(today.hgt)}
+                {formatNumber(today.hk_sh_net)}
               </Typography>
             </Paper>
           </Grid>
@@ -337,17 +337,17 @@ export default function FundMarketOverview() {
               }}
             >
               <Typography sx={{ fontSize: '0.65rem', color: '#1e40af' }}>
-                深股通
+                港股通(深)
               </Typography>
               <Typography
                 sx={{
                   fontSize: '1rem',
                   fontWeight: 700,
-                  color: today.sgt > 0 ? '#22c55e' : '#ef4444',
+                  color: today.hk_sz_net > 0 ? '#ef4444' : '#22c55e',
                   fontFamily: 'JetBrains Mono',
                 }}
               >
-                {formatNumber(today.sgt)}
+                {formatNumber(today.hk_sz_net)}
               </Typography>
             </Paper>
           </Grid>
@@ -479,7 +479,7 @@ export default function FundMarketOverview() {
         {/* 资金流向 & 市场情绪 */}
         <Grid size={{ xs: 12, md: 6 }}>
           <Grid container spacing={2} sx={{ height: '100%' }}>
-            {/* 北向资金 */}
+            {/* 南向资金 */}
             <Grid size={{ xs: 12 }}>
               <Paper
                 elevation={0}
@@ -490,9 +490,9 @@ export default function FundMarketOverview() {
                 }}
               >
                 <Typography sx={{ fontSize: '0.85rem', fontWeight: 700, color: '#1e293b', mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <AccountBalanceWalletIcon sx={{ fontSize: 18, color: '#f59e0b' }} /> 北向资金
+                  <AccountBalanceWalletIcon sx={{ fontSize: 18, color: '#f59e0b' }} /> 南向资金
                 </Typography>
-                {renderNorthboundFlow()}
+                {renderSouthboundFlow()}
               </Paper>
             </Grid>
 

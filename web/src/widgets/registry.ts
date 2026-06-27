@@ -9,7 +9,7 @@ import type{ WidgetDefinition, WidgetType } from './types';
 
 // Import widget components
 import MarketIndicesWidget from './components/MarketIndicesWidget';
-import NorthboundFlowWidget from './components/NorthboundFlowWidget';
+import SouthboundFlowWidget from './components/SouthboundFlowWidget';
 import IndustryFlowWidget from './components/IndustryFlowWidget';
 import SectorPerformanceWidget from './components/SectorPerformanceWidget';
 import TopListWidget from './components/TopListWidget';
@@ -44,14 +44,14 @@ export const WIDGET_DEFINITIONS: Record<WidgetType, WidgetDefinition> = {
             canExpand: true,
         },
     },
-    northbound_flow: {
-        type: 'northbound_flow',
-        name: '北向资金',
-        nameEn: 'Northbound Flow',
-        description: '沪深港通北向资金流向',
-        descriptionEn: 'Shanghai/Shenzhen-HK Stock Connect capital flow',
+    southbound_flow: {
+        type: 'southbound_flow',
+        name: '南向资金',
+        nameEn: 'Southbound Flow',
+        description: '港股通南向资金流向',
+        descriptionEn: 'HK Connect southbound capital flow',
         icon: 'TrendingUp',
-        component: NorthboundFlowWidget,
+        component: SouthboundFlowWidget,
         defaultSize: { w: 4, h: 6 },
         minSize: { w: 3, h: 3 },
         maxSize: { w: 6, h: 8 },
@@ -319,7 +319,7 @@ export function getWidgetsByCategory(): Record<string, WidgetDefinition[]> {
             WIDGET_DEFINITIONS.sector_performance,
         ],
         capital: [
-            WIDGET_DEFINITIONS.northbound_flow,
+            WIDGET_DEFINITIONS.southbound_flow,
             WIDGET_DEFINITIONS.industry_flow,
             WIDGET_DEFINITIONS.main_capital_flow,
             WIDGET_DEFINITIONS.top_list,
