@@ -220,7 +220,10 @@ class NewsService:
                             "url": "",
                         })
             except Exception as e:
-                print(f"AkShare news fallback error: {e}")
+                # Don't print 404 errors - they indicate the external API has changed
+                # This is a known issue with AkShare news functions
+                if "404" not in str(e):
+                    print(f"AkShare news fallback error: {e}")
 
         # Cache results
         if news_list:
@@ -432,7 +435,9 @@ class NewsService:
                     except Exception:
                         continue
             except Exception as e:
-                print(f"AkShare stock_news_em fallback error: {e}")
+                # Don't print 404 errors - they indicate the external API has changed
+                if "404" not in str(e):
+                    print(f"AkShare stock_news_em fallback error: {e}")
 
         # Deduplicate and sort
         seen = set()
@@ -648,7 +653,9 @@ class NewsService:
                                 break
 
             except Exception as e:
-                print(f"AkShare research fallback error: {e}")
+                # Don't print 404 errors - they indicate the external API has changed
+                if "404" not in str(e):
+                    print(f"AkShare research fallback error: {e}")
 
         if news_list:
             self._set_cache(cache_key, news_list, config.ttl)
