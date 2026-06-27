@@ -1059,6 +1059,62 @@ def get_all_fund_list(force_refresh: bool = False) -> List[Dict]:
     return []
 
 
+def sync_fund_basic_from_akshare() -> int:
+    """
+    使用 AkShare fund_name_em 同步全市场基金基础数据到 fund_basic 表。
+
+    基金列表变化不频繁，建议每天同步一次即可。
+    数据来源只有 code/name/type，缺失的字段留空，status 默认 'L'。
+
+    Returns:
+        同步成功的基金数量
+    """
+    from src.storage.db import upsert_fund_basic_batch
+
+    print("Syncing fund basic info from AkShare...")
+
+    try:
+        df = ak.fund_name_em()
+    except Exception as e:
+        print(f"Error fetching fund_name_em: {e}")
+        return 0
+
+    if df is None or df.empty:
+        print("No fund data from AkShare")
+        return 0
+
+    all_funds = []
+    for _, row in df.iterrows():
+        code = str(row.get('基金代码', ''))
+        name = str(row.get('基金简称', ''))
+        fund_type = str(row.get('基金类型', ''))
+
+        if not code or len(code) != 6:
+            continue
+
+        # fund_basic 表以 ts_code 为唯一键，AkShare 没有后缀，统一加 .OF
+        all_funds.append({
+            'ts_code': f'{code}.OF',
+            'code': code,
+            'name': name,
+            'fund_type': fund_type,
+            'status': 'L',
+        })
+
+    if not all_funds:
+        return 0
+
+    count = upsert_fund_basic_batch(all_funds)
+    print(f"Synced {count} funds from AkShare to database")
+
+    # 同步后刷新内存缓存
+    global _FUND_LIST_CACHE, _FUND_LIST_CACHE_FETCHED_AT
+    with _FUND_LIST_CACHE_LOCK:
+        _FUND_LIST_CACHE = [{'code': f['code'], 'name': f['name'], 'type': f['fund_type'], 'pinyin': ''} for f in all_funds]
+        _FUND_LIST_CACHE_FETCHED_AT = time.time()
+
+    return count
+
 
 def search_funds(query: str, limit: int = 10) -> List[Dict]:
 

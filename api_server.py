@@ -28,7 +28,7 @@ from src.analysis.fund import FundDiagnosis, RiskMetricsCalculator, DrawdownAnal
 from src.analysis.portfolio import RiskMetricsCalculator as PortfolioRiskMetrics, CorrelationAnalyzer, StressTestEngine, SignalGenerator
 from src.analysis.portfolio.stress_test import StressScenario, ScenarioType, PREDEFINED_SCENARIOS
 from src.data_sources.akshare_api import search_funds
-from src.storage.db import init_db, get_active_funds, get_all_funds, upsert_fund, delete_fund, get_fund_by_code, get_all_stocks, upsert_stock, delete_stock, get_stock_by_code, search_stock_basic, get_stock_basic_count, get_stock_basic_last_updated
+from src.storage.db import init_db, get_active_funds, get_all_funds, upsert_fund, delete_fund, get_fund_by_code, get_all_stocks, upsert_stock, delete_stock, get_stock_by_code, search_stock_basic, get_stock_basic_count, get_stock_basic_last_updated, get_fund_basic_count
 from src.storage.db import get_user_positions, get_position_by_id, create_position, update_position, delete_position, get_portfolio_summary, get_diagnosis_cache, save_diagnosis_cache
 # New portfolio management imports
 from src.storage.db import (
@@ -96,6 +96,19 @@ async def lifespan(app: FastAPI):
             print(f"Auto-sync stock basic failed: {e}")
     else:
         print(f"Stock basic table has {stock_count} stocks")
+
+    # Auto-sync fund basic info if table is empty
+    fund_count = get_fund_basic_count()
+    if fund_count == 0:
+        print("Fund basic table empty, syncing from AkShare...")
+        try:
+            from src.data_sources.akshare_api import sync_fund_basic_from_akshare
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, sync_fund_basic_from_akshare)
+        except Exception as e:
+            print(f"Auto-sync fund basic failed: {e}")
+    else:
+        print(f"Fund basic table has {fund_count} funds")
 
     print("Starting Scheduler (Background)...")
     # Run scheduler init in a separate thread so it doesn't block startup

@@ -84,6 +84,7 @@ class SchedulerManager:
         self.add_market_snapshot_job()
         self.add_daily_snapshot_job()
         self.add_factor_computation_job()
+        self.add_daily_basic_data_sync_job()
 
     def refresh_all_jobs(self):
         """Clear all and reload from DB (All users)"""
@@ -104,6 +105,8 @@ class SchedulerManager:
         self.add_daily_snapshot_job()
         # Re-add factor computation job
         self.add_factor_computation_job()
+        # Re-add basic data sync job
+        self.add_daily_basic_data_sync_job()
 
     def add_dashboard_refresh_job(self):
         """Schedule dashboard cache refresh every 5 minutes"""
@@ -196,6 +199,42 @@ class SchedulerManager:
             print(f"Factor computation module not available: {e}")
         except Exception as e:
             print(f"Error running daily factor computation: {e}")
+
+    def add_daily_basic_data_sync_job(self):
+        """Schedule daily basic data sync at 5:00 AM (基金和股票列表同步)"""
+        job_id = "daily_basic_data_sync"
+        if not self.scheduler.get_job(job_id):
+            self.scheduler.add_job(
+                self.run_daily_basic_data_sync,
+                trigger=CronTrigger(hour=5, minute=0),
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True
+            )
+            print("Scheduled daily basic data sync at 05:00")
+
+    def run_daily_basic_data_sync(self):
+        """Worker to sync fund and stock basic data daily"""
+        print("Starting daily basic data sync...")
+
+        # Sync funds from AkShare
+        try:
+            from src.data_sources.akshare_api import sync_fund_basic_from_akshare
+            count = sync_fund_basic_from_akshare()
+            print(f"Fund basic sync completed: {count} funds")
+        except Exception as e:
+            print(f"Error syncing fund basic data: {e}")
+
+        # Sync stocks from TuShare (if available)
+        try:
+            from src.data_sources.tushare_client import sync_stock_basic
+            count = sync_stock_basic()
+            print(f"Stock basic sync completed: {count} stocks")
+        except Exception as e:
+            print(f"Error syncing stock basic data: {e}")
+
+        print("Daily basic data sync completed.")
 
     def create_all_portfolio_snapshots(self):
         """Create snapshots for all portfolios (called by scheduler)"""

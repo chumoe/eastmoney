@@ -16,17 +16,30 @@ from app.core.cache import indices_cache
 from app.core.utils import sanitize_data
 from src.data_sources.akshare_api import search_funds, get_stock_realtime_quote, get_stock_realtime_quote_min, get_stock_history
 from src.data_sources.tushare_client import search_funds_tushare, _get_tushare_pro
-from src.storage.db import search_stock_basic, get_stock_basic_count
+from src.storage.db import search_stock_basic, get_stock_basic_count, search_fund_basic, get_fund_basic_count
 
 router = APIRouter(tags=["Market"])
 
 
 @router.get("/api/market/funds")
 async def search_market_funds(q: str):
-    """Search funds by query."""
+    """Search funds by query. 优先从 fund_basic 表搜索，更快。"""
     if not q:
         return []
     try:
+        fund_count = get_fund_basic_count()
+        if fund_count > 0:
+            results = search_fund_basic(q, limit=50)
+            # 转换字段名以保持前端兼容
+            return [
+                {
+                    'code': r.get('code', ''),
+                    'name': r.get('name', ''),
+                    'type': r.get('fund_type', ''),
+                }
+                for r in results
+            ]
+        # 数据库为空时 fallback 到 AkShare 实时搜索
         results = search_funds(q)
         return results
     except Exception as e:
