@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from app.models.funds import FundItem, FundCompareRequest
 from app.models.auth import User
 from app.core.dependencies import get_current_user
-from app.core.utils import sanitize_for_json
+from app.core.utils import sanitize_for_json, get_market_cache_ttl
 from app.core.helpers import get_fund_nav_history, get_fund_basic_info, get_fund_holdings_list
 from src.storage.db import (
     get_all_funds, upsert_fund, delete_fund, get_diagnosis_cache, save_diagnosis_cache
@@ -307,10 +307,7 @@ def _is_trading_hours() -> bool:
 
 def _get_estimation_cache_ttl() -> int:
     """Return appropriate cache TTL based on trading hours."""
-    if _is_trading_hours():
-        return 60  # 1 minute during trading
-    else:
-        return 3600  # 1 hour after market close (use 15:00 data)
+    return get_market_cache_ttl(trading_ttl=60)
 
 
 def _fetch_all_estimations() -> dict:
@@ -818,14 +815,6 @@ _market_sectors_cache = None
 _market_sectors_ts = 0.0
 _market_sentiment_cache = None
 _market_sentiment_ts = 0.0
-_MARKET_OVERVIEW_TTL = 60  # 60秒缓存，交易时段可适当缩短
-
-
-def _is_trading_hours() -> bool:
-    """判断当前是否为交易时段（09:30-15:00）"""
-    now = datetime.now()
-    current_min = now.hour * 60 + now.minute
-    return 570 <= current_min <= 900  # 09:30-15:00
 
 @router.get("/market/indices")
 async def get_market_indices(current_user: User = Depends(get_current_user)):
@@ -835,7 +824,7 @@ async def get_market_indices(current_user: User = Depends(get_current_user)):
     """
     global _market_indices_cache, _market_indices_ts
 
-    ttl = 30 if _is_trading_hours() else 300  # 交易时段30秒，休市5分钟
+    ttl = get_market_cache_ttl(trading_ttl=60)
 
     # 检查缓存
     with _market_overview_lock:
@@ -905,7 +894,7 @@ async def get_market_sectors(
     """
     global _market_sectors_cache, _market_sectors_ts
 
-    ttl = 60 if _is_trading_hours() else 600  # 交易时段60秒，休市10分钟
+    ttl = get_market_cache_ttl(trading_ttl=60)
 
     # 检查缓存（注意：limit 不同会影响缓存，这里简单处理）
     with _market_overview_lock:
@@ -1035,7 +1024,7 @@ async def get_market_sentiment(current_user: User = Depends(get_current_user)):
     """
     global _market_sentiment_cache, _market_sentiment_ts
 
-    ttl = 30 if _is_trading_hours() else 300  # 交易时段30秒，休市5分钟
+    ttl = get_market_cache_ttl(trading_ttl=60)
 
     # 检查情绪结果缓存
     with _market_overview_lock:

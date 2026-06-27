@@ -3,12 +3,66 @@ Utility functions for data processing and environment management.
 """
 import os
 import math
-from datetime import datetime
+from datetime import datetime, timedelta, time
 from typing import Dict, Any
 import pandas as pd
 import numpy as np
 
 from .config import ENV_FILE
+
+
+def get_market_cache_ttl(trading_ttl: int = 60, max_ttl: int = 86400) -> int:
+    """
+    根据当前时间计算市场数据缓存 TTL。
+    
+    - 交易时段返回 trading_ttl（默认60秒）
+    - 休市时段返回到下一次开盘的秒数（午间休市→下午开盘，收盘→次日开盘）
+    - 周末自动顺延到下周一开盘
+    
+    Args:
+        trading_ttl: 交易时段的缓存秒数，默认60秒
+        max_ttl: 最大缓存秒数，默认24小时
+    
+    Returns:
+        缓存 TTL 秒数
+    """
+    now = datetime.now()
+    current_t = now.time()
+    weekday = now.weekday()  # 0=周一, 6=周日
+
+    morning_start = time(9, 30)
+    morning_end = time(11, 30)
+    afternoon_start = time(13, 0)
+    afternoon_end = time(15, 0)
+
+    # 周末直接跳到下周一
+    if weekday >= 5:
+        days_to_monday = 7 - weekday
+        next_monday = now.date() + timedelta(days=days_to_monday)
+        next_open = datetime.combine(next_monday, morning_start)
+        seconds_until_open = int((next_open - now).total_seconds())
+        return min(max(seconds_until_open + 60, 60), max_ttl)
+
+    in_morning = morning_start <= current_t <= morning_end
+    in_afternoon = afternoon_start <= current_t <= afternoon_end
+
+    if in_morning or in_afternoon:
+        return trading_ttl
+
+    # 工作日休市时段
+    if current_t < morning_start:
+        next_open = datetime.combine(now.date(), morning_start)
+    elif morning_end < current_t < afternoon_start:
+        next_open = datetime.combine(now.date(), afternoon_start)
+    else:
+        next_day = now.date() + timedelta(days=1)
+        # 如果第二天是周末，跳到周一
+        while next_day.weekday() >= 5:
+            next_day += timedelta(days=1)
+        next_open = datetime.combine(next_day, morning_start)
+
+    seconds_until_open = int((next_open - now).total_seconds())
+    return min(max(seconds_until_open + 60, 60), max_ttl)
 
 
 def sanitize_for_json(obj):

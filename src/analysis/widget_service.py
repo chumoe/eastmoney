@@ -113,6 +113,50 @@ class WidgetDataService:
         hm = now.hour * 100 + now.minute
         return 930 <= hm < 1500
 
+    def _get_dynamic_ttl(self, trading_ttl: int = 60, max_ttl: int = 86400) -> int:
+        """
+        动态计算缓存 TTL。
+        - 交易时段返回 trading_ttl（默认60秒）
+        - 休市时段返回到下一次开盘的秒数
+        - 周末自动顺延到下周一
+        """
+        from datetime import time as dt_time
+
+        now = datetime.now()
+        current_t = now.time()
+        weekday = now.weekday()
+
+        morning_start = dt_time(9, 30)
+        morning_end = dt_time(11, 30)
+        afternoon_start = dt_time(13, 0)
+        afternoon_end = dt_time(15, 0)
+
+        if weekday >= 5:
+            days_to_monday = 7 - weekday
+            next_monday = now.date() + timedelta(days=days_to_monday)
+            next_open = datetime.combine(next_monday, morning_start)
+            seconds_until_open = int((next_open - now).total_seconds())
+            return min(max(seconds_until_open + 60, 60), max_ttl)
+
+        in_morning = morning_start <= current_t <= morning_end
+        in_afternoon = afternoon_start <= current_t <= afternoon_end
+
+        if in_morning or in_afternoon:
+            return trading_ttl
+
+        if current_t < morning_start:
+            next_open = datetime.combine(now.date(), morning_start)
+        elif morning_end < current_t < afternoon_start:
+            next_open = datetime.combine(now.date(), afternoon_start)
+        else:
+            next_day = now.date() + timedelta(days=1)
+            while next_day.weekday() >= 5:
+                next_day += timedelta(days=1)
+            next_open = datetime.combine(next_day, morning_start)
+
+        seconds_until_open = int((next_open - now).total_seconds())
+        return min(max(seconds_until_open + 60, 60), max_ttl)
+
     def _safe_float(self, value, default=0.0) -> float:
         """Safely convert value to float, return default if None, invalid, or NaN."""
         if value is None:
@@ -1187,8 +1231,8 @@ class WidgetDataService:
         """
         cache_key = f"dashboard_bundle:{limit}:{days}"
 
-        # 休市时缓存更久
-        bundle_ttl = 60 if self._is_market_open() else 3600
+        # 动态 TTL：交易时段60秒，休市时段到下次开盘
+        bundle_ttl = self._get_dynamic_ttl(trading_ttl=60)
         cached = self._get_cache(cache_key)
         if cached:
             return cached
