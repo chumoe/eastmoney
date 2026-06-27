@@ -12,8 +12,8 @@ set EXPORT_FILE=eastmoney.tar
 echo Building ARM64 image: %FULL_IMAGE_NAME%
 echo.
 
-REM 使用 podman buildx 构建 arm64/v8 架构镜像
-podman buildx build --platform linux/arm64/v8 ^
+REM 使用 podman buildx 构建 amd64 架构镜像
+podman buildx build --platform linux/amd64 ^
     -t %FULL_IMAGE_NAME% ^
     -f Dockerfile ^
     --load ^
