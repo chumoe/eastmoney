@@ -40,6 +40,91 @@ from src.data_sources.technical_analysis import compute_technical_factors_from_h
 router = APIRouter(prefix="/api/stocks", tags=["Stocks"])
 
 
+async def _fill_stock_sectors(stocks: List[Dict], user_id: int) -> List[Dict]:
+    """补全股票的 sector（行业）字段。
+
+    优先级：
+    1. 数据库 stocks 表中已有的 sector
+    2. stock_basic 表中的 industry（TuShare 同步的数据）
+    3. 调用 TuShare stock_basic 接口全量同步到 stock_basic 表（首次慢，后续快）
+    4. 失败则保持空值，不影响其他数据
+    """
+    # 找出需要补全 sector 的股票
+    missing_codes = [
+        s['code'] for s in stocks
+        if not s.get('sector') or str(s.get('sector', '')).strip() == ''
+    ]
+
+    if not missing_codes:
+        return stocks
+
+    sector_map: Dict[str, str] = {}
+
+    # 1. 先从 stock_basic 表查
+    try:
+        from src.storage.db import get_db_connection
+        conn = get_db_connection()
+        placeholders = ','.join(['?'] * len(missing_codes))
+        rows = conn.execute(
+            f'SELECT symbol, industry FROM stock_basic WHERE symbol IN ({placeholders})',
+            tuple(missing_codes)
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            industry = row['industry']
+            if industry:
+                sector_map[row['symbol']] = industry
+    except Exception:
+        pass
+
+    # 2. 还有缺失的，触发 TuShare 全量同步（同步到 stock_basic 表）
+    still_missing = [c for c in missing_codes if c not in sector_map]
+    if still_missing:
+        try:
+            from src.data_sources.tushare_client import sync_stock_basic
+
+            # 在后台线程中同步，避免阻塞当前请求太久
+            # 同步完成后，从 stock_basic 表再查一次
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, sync_stock_basic)
+
+            # 同步完成后，重新从 stock_basic 表查询
+            try:
+                from src.storage.db import get_db_connection
+                conn = get_db_connection()
+                placeholders = ','.join(['?'] * len(still_missing))
+                rows = conn.execute(
+                    f'SELECT symbol, industry FROM stock_basic WHERE symbol IN ({placeholders})',
+                    tuple(still_missing)
+                ).fetchall()
+                conn.close()
+                for row in rows:
+                    industry = row['industry']
+                    if industry:
+                        sector_map[row['symbol']] = industry
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # 3. 更新 stocks 列表并回写数据库
+    updated_stocks = []
+    for s in stocks:
+        code = s['code']
+        if not s.get('sector') and code in sector_map:
+            s = dict(s)
+            s['sector'] = sector_map[code]
+            # 回写数据库
+            try:
+                upsert_stock(s, user_id=user_id)
+            except Exception:
+                pass
+        updated_stocks.append(s)
+
+    return updated_stocks
+
+
 @router.get("", response_model=List[StockItem])
 async def get_stocks_endpoint(current_user: User = Depends(get_current_user)):
     """Get all stocks for current user with real-time quotes."""
@@ -48,6 +133,10 @@ async def get_stocks_endpoint(current_user: User = Depends(get_current_user)):
 
         if not stocks:
             return []
+
+        # 补全 sector（行业）字段
+        # 优先用数据库里已有的，没有的从 API 获取并回写数据库
+        stocks = await _fill_stock_sectors(stocks, current_user.id)
 
         # Try tushare first, then fall back to akshare
         quotes_lookup = {}
@@ -202,6 +291,36 @@ async def upsert_stock_endpoint(code: str, stock: StockItem, current_user: User 
     """Create or update a stock."""
     try:
         stock_dict = stock.model_dump()
+
+        # 如果没有 sector，尝试从 stock_basic 表或 TuShare 获取
+        if not stock_dict.get('sector'):
+            try:
+                from src.storage.db import get_db_connection
+                conn = get_db_connection()
+                row = conn.execute(
+                    'SELECT industry FROM stock_basic WHERE symbol = ?',
+                    (code,)
+                ).fetchone()
+                conn.close()
+                if row and row['industry']:
+                    stock_dict['sector'] = row['industry']
+            except Exception:
+                pass
+
+        if not stock_dict.get('sector'):
+            try:
+                from src.data_sources.tushare_client import get_stock_basic_from_tushare
+                import pandas as pd
+                df = get_stock_basic_from_tushare()
+                if df is not None and not df.empty:
+                    filtered = df[df['symbol'] == code]
+                    if not filtered.empty:
+                        ind = filtered.iloc[0].get('industry')
+                        if pd.notna(ind) and ind:
+                            stock_dict['sector'] = str(ind)
+            except Exception:
+                pass
+
         upsert_stock(stock_dict, user_id=current_user.id)
         return {"status": "success"}
     except Exception as e:
