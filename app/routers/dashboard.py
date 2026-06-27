@@ -9,6 +9,7 @@ from app.models.auth import User
 from app.core.dependencies import get_current_user, get_user_report_dir
 from app.core.config import REPORT_DIR
 from src.analysis.dashboard import DashboardService
+from src.services.market_snapshot_service import market_snapshot_service
 from src.storage.db import (
     get_user_layouts, get_layout_by_id, get_default_layout,
     save_layout, update_layout, delete_layout, set_default_layout
@@ -23,6 +24,30 @@ async def get_dashboard_overview():
     try:
         service = DashboardService(REPORT_DIR)
         return await asyncio.to_thread(service.get_full_dashboard)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/snapshot")
+async def get_market_snapshot():
+    """Get pre-generated market snapshot (fast)."""
+    try:
+        snapshot = await asyncio.to_thread(market_snapshot_service.get_snapshot)
+        return snapshot
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/snapshot/refresh")
+async def refresh_market_snapshot():
+    """Force refresh market snapshot."""
+    try:
+        success = await asyncio.to_thread(market_snapshot_service.refresh)
+        return {"success": success}
     except Exception as e:
         import traceback
         traceback.print_exc()

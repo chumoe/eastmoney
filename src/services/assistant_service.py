@@ -18,6 +18,7 @@ from src.llm.client import get_llm_client, ChatResponse, ToolCall
 from src.llm.tools.schemas import get_tools_for_llm
 from src.llm.tools.executor import tool_executor
 from src.services.news_service import news_service
+from src.services.market_snapshot_service import market_snapshot_service
 from src.storage.db import get_all_stocks, get_all_funds
 
 
@@ -129,6 +130,37 @@ class AssistantService:
             sentiment_filter=sentiment_filter
         )
 
+    def _is_market_overview_question(self, message: str) -> bool:
+        """
+        Check if the user is asking for a general market overview.
+        These questions can be answered quickly using the pre-generated snapshot.
+        """
+        message_lower = message.lower().strip()
+
+        # Short market overview queries (these are the slowest because they trigger many tool calls)
+        overview_patterns = [
+            "市场概况", "市场概括", "市场行情", "市场怎么样", "市场如何",
+            "大盘怎么样", "大盘如何", "大盘情况", "大盘走势",
+            "今天市场", "今日市场", "今天行情", "今日行情",
+            "市场总结", "市场概况一下", "市场概览",
+            "两市", "盘面", "市场整体",
+            "行情怎么样", "行情如何",
+            "介绍一下市场", "说说市场",
+        ]
+
+        for pattern in overview_patterns:
+            if pattern in message_lower:
+                return True
+
+        # Also match very short queries like "市场" "大盘" "行情"
+        if len(message_lower) <= 6:
+            short_keywords = ["市场", "大盘", "行情", "盘面"]
+            if any(message_lower == kw or message_lower == kw + "?" or message_lower == kw + "？"
+                   for kw in short_keywords):
+                return True
+
+        return False
+
     def chat(
         self,
         message: str,
@@ -165,6 +197,23 @@ class AssistantService:
             }
 
         try:
+            # Fast path: check if this is a market overview question
+            # Use pre-generated snapshot to avoid slow tool calls
+            if self._is_market_overview_question(message):
+                snapshot = market_snapshot_service.get_snapshot()
+                if snapshot and snapshot.get("text"):
+                    return {
+                        "response": snapshot["text"],
+                        "sources": [],
+                        "context_used": {
+                            "stock_code": None,
+                            "fund_code": None,
+                            "intent": "data",
+                            "search_keywords": ["市场概况"],
+                            "tools_used": [{"name": "market_snapshot", "from_cache": True}],
+                        }
+                    }
+
             # Run the Agent Loop
             response, tools_used = self._run_agent_loop(message, context, history)
 
