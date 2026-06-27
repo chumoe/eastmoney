@@ -17,10 +17,9 @@ echo.
 
 REM 使用 podman build 构建 arm64 架构镜像
 REM --layers=true 启用分层缓存（默认已启用，显式指定确保生效）
-REM --cache-from 从现有镜像复用缓存层
+REM 注：podman 默认自动使用本地镜像缓存，无需额外 --cache-from 参数
 podman build --platform linux/arm64 ^
     --layers=true ^
-    --cache-from %FULL_IMAGE_NAME% ^
     -t %FULL_IMAGE_NAME% ^
     .
 
