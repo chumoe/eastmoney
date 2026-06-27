@@ -227,13 +227,11 @@ class AssistantService:
         for iteration in range(self._max_iterations):
             print(f"[Agent Loop] Iteration {iteration + 1}")
 
-            # Debug: validate messages before API call
-            if iteration > 0:
-                print(f"[Agent Loop] Debug: messages count = {len(messages)}")
-                for i, msg in enumerate(messages):
-                    if msg.get("role") == "tool":
-                        tc_id = msg.get("tool_call_id")
-                        print(f"  messages[{i}] tool, tool_call_id={tc_id!r}, has_tc_id={tc_id is not None}")
+            # Validate messages before API call
+            for i, msg in enumerate(messages):
+                if msg.get("role") == "tool":
+                    if not msg.get("tool_call_id"):
+                        print(f"[ERROR] messages[{i}] is tool role but missing tool_call_id!")
 
             # Call LLM with tools
             response: ChatResponse = llm.chat_with_tools(
@@ -245,7 +243,6 @@ class AssistantService:
             print(f"[Agent Loop] finish_reason: {response.finish_reason}, tool_calls: {len(response.tool_calls)}")
 
             # Capture reasoning_content for thinking mode models (o1, etc.)
-            # o1 models require reasoning_content to be passed back when there are tool calls
             if response.reasoning_content:
                 reasoning_content = response.reasoning_content
                 print(f"[Agent Loop] Captured reasoning_content ({len(reasoning_content)} chars)")
@@ -258,7 +255,6 @@ class AssistantService:
                 tool_call_results = []
                 for tool_call in response.tool_calls:
                     print(f"[Agent Loop] Executing tool: {tool_call.name} with args: {tool_call.arguments}")
-                    print(f"[Agent Loop]   -> tool_call.id = {tool_call.id!r}")
 
                     result = tool_executor.execute(tool_call.name, tool_call.arguments)
                     tool_call_results.append((tool_call, result))
@@ -269,23 +265,17 @@ class AssistantService:
                         "success": result.get("success", False)
                     })
 
-                # Build SINGLE assistant message with ALL tool calls
-                # This is the correct OpenAI format - one assistant msg with multiple tool_calls
+                # Build SINGLE assistant message with ALL tool calls (correct OpenAI format)
                 assistant_msg = {
                     "role": "assistant",
-                    "content": None,
+                    "content": "",
                     "tool_calls": []
                 }
 
-                # Add reasoning_content if present (for o1 thinking mode models)
-                if reasoning_content and provider in ["openai", "openai_compatible"]:
-                    assistant_msg["reasoning_content"] = reasoning_content
-                    print(f"[Agent Loop] Added reasoning_content to assistant message ({len(reasoning_content)} chars)")
-
-                # Add all tool calls to the single assistant message
+                # Add all tool calls
                 for tool_call, _ in tool_call_results:
                     assistant_msg["tool_calls"].append({
-                        "id": tool_call.id,
+                        "id": str(tool_call.id),
                         "type": "function",
                         "function": {
                             "name": tool_call.name,
@@ -293,41 +283,35 @@ class AssistantService:
                         }
                     })
 
+                # Add reasoning_content if present and provider supports it
+                # Only add for OpenAI provider - other providers may not support this field
+                if reasoning_content and provider == "openai":
+                    assistant_msg["reasoning_content"] = reasoning_content
+                    print(f"[Agent Loop] Added reasoning_content to assistant message")
+
                 messages.append(assistant_msg)
-                print(f"[Agent Loop] Added assistant message with {len(assistant_msg['tool_calls'])} tool calls at index {len(messages) - 1}")
 
                 # Add tool result messages (one per tool call, AFTER the assistant message)
                 for tool_call, result in tool_call_results:
-                    tool_content = result.get("data") or result
+                    tool_content = result.get("data") if result.get("data") is not None else result
                     if not isinstance(tool_content, str):
                         tool_content = json.dumps(tool_content, ensure_ascii=False)
 
                     tool_result_msg = {
                         "role": "tool",
                         "tool_call_id": str(tool_call.id),
+                        "name": tool_call.name,
                         "content": tool_content
                     }
                     messages.append(tool_result_msg)
-                    print(f"[Agent Loop] Added tool result msg at index {len(messages) - 1}, tool_call_id={tool_call.id}")
 
-                # Debug: verify all tool messages have tool_call_id
-                print(f"[Agent Loop] Messages array after processing ({len(messages)} total):")
-                for i, msg in enumerate(messages):
-                    role = msg.get("role")
-                    if role == "tool":
-                        tc_id = msg.get("tool_call_id")
-                        print(f"  messages[{i}] role=tool, tool_call_id={tc_id!r}, valid={tc_id is not None}")
-                    elif role == "assistant" and msg.get("tool_calls"):
-                        has_rc = "reasoning_content" in msg
-                        print(f"  messages[{i}] role=assistant, tool_calls={len(msg['tool_calls'])}, has_reasoning_content={has_rc}")
-
-                # Clear reasoning_content after processing all tool calls from this response
+                # Clear reasoning_content after processing all tool calls
                 reasoning_content = None
 
                 # Continue the loop to get next response
                 continue
 
-            # No tool calls - clear reasoning_content since it wasn't used
+            # No tool calls - clear reasoning_content
             reasoning_content = None
 
             # No tool calls - we have a final response

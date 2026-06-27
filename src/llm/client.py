@@ -120,16 +120,38 @@ class GoogleGeminiClient(BaseLLMClient):
                         parts=[types.Part(text=content)]
                     ))
                 elif role == "assistant":
-                    contents.append(types.Content(
-                        role="model",
-                        parts=[types.Part(text=content)]
-                    ))
+                    parts = []
+                    # Handle tool calls in assistant message
+                    tool_calls = msg.get("tool_calls", [])
+                    if tool_calls:
+                        for tc in tool_calls:
+                            func = tc.get("function", {})
+                            try:
+                                args = json.loads(func.get("arguments", "{}")) if func.get("arguments") else {}
+                            except json.JSONDecodeError:
+                                args = {}
+                            parts.append(types.Part(
+                                function_call=types.FunctionCall(
+                                    name=func.get("name", ""),
+                                    args=args
+                                )
+                            ))
+                    # Add text content if present
+                    if content:
+                        parts.append(types.Part(text=content))
+                    contents.append(types.Content(role="model", parts=parts))
                 elif role == "tool":
                     # Tool result message
+                    # Gemini's FunctionResponse needs the function name
+                    tool_name = msg.get("name", "tool_response")
+                    try:
+                        response_data = json.loads(content) if content else {}
+                    except json.JSONDecodeError:
+                        response_data = {"result": content}
                     tool_response = types.Part(
                         function_response=types.FunctionResponse(
-                            name=msg.get("name", ""),
-                            response={"result": content}
+                            name=tool_name,
+                            response=response_data
                         )
                     )
                     contents.append(types.Content(role="user", parts=[tool_response]))
