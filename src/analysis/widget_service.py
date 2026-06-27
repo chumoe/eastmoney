@@ -118,23 +118,24 @@ class WidgetDataService:
         动态计算缓存 TTL。
         - 交易时段返回 trading_ttl（默认60秒）
         - 休市时段返回到下一次开盘的秒数
-        - 周末自动顺延到下周一
+        - 周末和法定节假日自动顺延到下一个交易日
         """
         from datetime import time as dt_time
+        from src.data_sources.utils import is_trading_day
 
         now = datetime.now()
         current_t = now.time()
-        weekday = now.weekday()
+        today_str = now.strftime('%Y%m%d')
 
         morning_start = dt_time(9, 30)
         morning_end = dt_time(11, 30)
         afternoon_start = dt_time(13, 0)
         afternoon_end = dt_time(15, 0)
 
-        if weekday >= 5:
-            days_to_monday = 7 - weekday
-            next_monday = now.date() + timedelta(days=days_to_monday)
-            next_open = datetime.combine(next_monday, morning_start)
+        # 今天不是交易日（周末或节假日）
+        if not is_trading_day(today_str):
+            next_trading_day = self._find_next_trading_day(now.date())
+            next_open = datetime.combine(next_trading_day, morning_start)
             seconds_until_open = int((next_open - now).total_seconds())
             return min(max(seconds_until_open + 60, 60), max_ttl)
 
@@ -149,13 +150,22 @@ class WidgetDataService:
         elif morning_end < current_t < afternoon_start:
             next_open = datetime.combine(now.date(), afternoon_start)
         else:
-            next_day = now.date() + timedelta(days=1)
-            while next_day.weekday() >= 5:
-                next_day += timedelta(days=1)
-            next_open = datetime.combine(next_day, morning_start)
+            next_trading_day = self._find_next_trading_day(now.date() + timedelta(days=1))
+            next_open = datetime.combine(next_trading_day, morning_start)
 
         seconds_until_open = int((next_open - now).total_seconds())
         return min(max(seconds_until_open + 60, 60), max_ttl)
+
+    def _find_next_trading_day(self, start_date):
+        """从 start_date 开始找下一个交易日（含当天）"""
+        from src.data_sources.utils import is_trading_day
+
+        check_date = start_date
+        for _ in range(30):
+            if is_trading_day(check_date.strftime('%Y%m%d')):
+                return check_date
+            check_date += timedelta(days=1)
+        return start_date + timedelta(days=1)
 
     def _safe_float(self, value, default=0.0) -> float:
         """Safely convert value to float, return default if None, invalid, or NaN."""

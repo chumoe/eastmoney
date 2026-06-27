@@ -17,7 +17,7 @@ def get_market_cache_ttl(trading_ttl: int = 60, max_ttl: int = 86400) -> int:
     
     - 交易时段返回 trading_ttl（默认60秒）
     - 休市时段返回到下一次开盘的秒数（午间休市→下午开盘，收盘→次日开盘）
-    - 周末自动顺延到下周一开盘
+    - 周末和法定节假日自动顺延到下一个交易日开盘
     
     Args:
         trading_ttl: 交易时段的缓存秒数，默认60秒
@@ -26,20 +26,22 @@ def get_market_cache_ttl(trading_ttl: int = 60, max_ttl: int = 86400) -> int:
     Returns:
         缓存 TTL 秒数
     """
+    from src.data_sources.utils import is_trading_day
+    from datetime import time as dt_time, date as dt_date
+
     now = datetime.now()
     current_t = now.time()
-    weekday = now.weekday()  # 0=周一, 6=周日
+    today_str = now.strftime('%Y%m%d')
 
-    morning_start = time(9, 30)
-    morning_end = time(11, 30)
-    afternoon_start = time(13, 0)
-    afternoon_end = time(15, 0)
+    morning_start = dt_time(9, 30)
+    morning_end = dt_time(11, 30)
+    afternoon_start = dt_time(13, 0)
+    afternoon_end = dt_time(15, 0)
 
-    # 周末直接跳到下周一
-    if weekday >= 5:
-        days_to_monday = 7 - weekday
-        next_monday = now.date() + timedelta(days=days_to_monday)
-        next_open = datetime.combine(next_monday, morning_start)
+    # 今天不是交易日（周末或节假日），直接找到下一个交易日
+    if not is_trading_day(today_str):
+        next_trading_day = _find_next_trading_day(now.date())
+        next_open = datetime.combine(next_trading_day, morning_start)
         seconds_until_open = int((next_open - now).total_seconds())
         return min(max(seconds_until_open + 60, 60), max_ttl)
 
@@ -55,14 +57,33 @@ def get_market_cache_ttl(trading_ttl: int = 60, max_ttl: int = 86400) -> int:
     elif morning_end < current_t < afternoon_start:
         next_open = datetime.combine(now.date(), afternoon_start)
     else:
-        next_day = now.date() + timedelta(days=1)
-        # 如果第二天是周末，跳到周一
-        while next_day.weekday() >= 5:
-            next_day += timedelta(days=1)
-        next_open = datetime.combine(next_day, morning_start)
+        # 收盘后，找下一个交易日
+        next_trading_day = _find_next_trading_day(now.date() + timedelta(days=1))
+        next_open = datetime.combine(next_trading_day, morning_start)
 
     seconds_until_open = int((next_open - now).total_seconds())
     return min(max(seconds_until_open + 60, 60), max_ttl)
+
+
+def _find_next_trading_day(start_date) -> 'dt_date':
+    """
+    从 start_date 开始找下一个交易日（含当天）。
+    
+    Args:
+        start_date: 开始日期
+    
+    Returns:
+        下一个交易日的 date 对象
+    """
+    from src.data_sources.utils import is_trading_day
+    from datetime import date as dt_date
+
+    check_date = start_date
+    for _ in range(30):
+        if is_trading_day(check_date.strftime('%Y%m%d')):
+            return check_date
+        check_date += timedelta(days=1)
+    return start_date + timedelta(days=1)
 
 
 def sanitize_for_json(obj):
