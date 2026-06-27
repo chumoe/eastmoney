@@ -271,61 +271,55 @@ def get_northbound_flow_from_tushare() -> Dict:
 
 def _get_market_indices_dict_from_tushare() -> Dict:
     """
-    Get Chinese market indices from TuShare (internal Dict format).
+    Get Chinese market indices from AkShare (internal Dict format).
 
     Returns:
         Dict mapping index name to market data
     """
     indices = {
-        "000001.SH": "上证指数",
-        "399006.SZ": "创业板指数",
+        "sh000001": "上证指数",
+        "sz399006": "创业板指数",
     }
 
     market_data = {}
 
     try:
-        # Use get_latest_trade_date to get correct trading day
-        trade_date = tushare_client.get_latest_trade_date(max_days_back=10)
-        if not trade_date:
-            return {}
+        import akshare as ak
 
-        # Get a few days of data for change calculation
-        end_dt = datetime.strptime(trade_date, '%Y%m%d')
-        start_date = (end_dt - timedelta(days=5)).strftime('%Y%m%d')
-        end_date = trade_date
+        for symbol, name in indices.items():
+            try:
+                df = ak.stock_zh_index_daily_em(symbol=symbol)
+                if df is None or df.empty:
+                    continue
 
-        for ts_code, name in indices.items():
-            df = tushare_client.get_index_daily(
-                ts_code=ts_code,
-                start_date=start_date,
-                end_date=end_date
-            )
+                df_sorted = df.sort_values('date', ascending=True)
+                latest = df_sorted.iloc[-1]
 
-            if df is None or df.empty:
+                pct_change = None
+                if len(df_sorted) >= 2:
+                    prev = df_sorted.iloc[-2]
+                    try:
+                        prev_close = _safe_float(prev['close'])
+                        if prev_close > 0:
+                            pct_change = round(
+                                (_safe_float(latest['close']) / prev_close - 1.0) * 100.0, 2
+                            )
+                    except:
+                        pass
+
+                market_data[name] = {
+                    '日期': str(latest['date']),
+                    '收盘': _safe_float(latest['close']),
+                    '涨跌幅': pct_change if pct_change is not None else 'N/A',
+                }
+            except Exception as e:
+                print(f"Failed to fetch {name} from AkShare: {e}")
                 continue
-
-            # Sort by date and get latest
-            df_sorted = df.sort_values('trade_date', ascending=True)
-            latest = df_sorted.iloc[-1]
-
-            pct_change = None
-            if len(df_sorted) >= 2:
-                prev = df_sorted.iloc[-2]
-                try:
-                    pct_change = (_safe_float(latest['close']) / _safe_float(prev['close']) - 1.0) * 100.0
-                except:
-                    pass
-
-            market_data[name] = {
-                '日期': str(latest['trade_date']),
-                '收盘': _safe_float(latest['close']),
-                '涨跌幅': round(pct_change, 2) if pct_change is not None else 'N/A',
-            }
 
         return market_data
 
     except Exception as e:
-        print(f"TuShare market indices failed: {e}")
+        print(f"AkShare market indices failed: {e}")
         import traceback
         traceback.print_exc()
         return {}
@@ -791,12 +785,12 @@ def get_forex_rates_from_tushare() -> Dict:
 
 def get_market_indices_from_tushare() -> List[Dict]:
     """
-    Get market indices from TuShare + yFinance.
+    Get market indices from AkShare + yFinance.
 
     Strategy:
-    - Chinese indices: TuShare (上证、深证、创业板)
+    - Chinese indices: AkShare (上证、深证、创业板) - 免费无频率限制
     - US indices: yFinance (纳斯达克、标普500)
-    - HK/Asia indices: TuShare (恒生、日经)
+    - HK/Asia indices: AkShare
     - Cache for 1 minute during trading hours
 
     Returns:
@@ -818,62 +812,46 @@ def get_market_indices_from_tushare() -> List[Dict]:
 
     results = []
 
-    # Chinese indices from TuShare
+    # Chinese indices from AkShare (免费无频率限制)
     chinese_indices = {
-        "000001.SH": "上证指数",
-        "399001.SZ": "深证成指",
-        "399006.SZ": "创业板指",
+        "sh000001": "上证指数",
+        "sz399001": "深证成指",
+        "sz399006": "创业板指",
     }
 
-    # Rate limiting check
-    if not rate_limiter.acquire('index_daily'):
-        print("⚠️  Rate limit reached for index_daily")
-        return []
-
     try:
-        # Use get_latest_trade_date for correct trading day
-        trade_date = tushare_client.get_latest_trade_date(max_days_back=10)
-        if not trade_date:
-            return []
+        import akshare as ak
 
-        end_dt = datetime.strptime(trade_date, '%Y%m%d')
-        start_date = (end_dt - timedelta(days=5)).strftime('%Y%m%d')
-        end_date = trade_date
-
-        for ts_code, name in chinese_indices.items():
+        for symbol, name in chinese_indices.items():
             try:
-                df = tushare_client.get_index_daily(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-
+                df = ak.stock_zh_index_daily_em(symbol=symbol)
                 if df is not None and not df.empty:
-                    # Get latest and previous for change calculation
-                    df_sorted = df.sort_values('trade_date', ascending=False)
+                    df_sorted = df.sort_values('date', ascending=False)
                     latest = df_sorted.iloc[0]
 
-                    # Calculate change with safe float conversion
-                    pct_change = _safe_float(latest.get('pct_chg', 0))
                     close = _safe_float(latest['close'])
-                    change_val = close * (pct_change / 100)
+                    pct_change = 0.0
+                    change_val = 0.0
+
+                    if len(df_sorted) >= 2:
+                        prev_close = _safe_float(df_sorted.iloc[1]['close'])
+                        if prev_close > 0:
+                            pct_change = round((close - prev_close) / prev_close * 100, 2)
+                            change_val = round(close - prev_close, 2)
 
                     results.append({
                         "name": name,
-                        "code": ts_code,
+                        "code": symbol,
                         "price": close,
                         "change_pct": pct_change,
                         "change_val": change_val
                     })
             except Exception as e:
-                print(f"Failed to fetch {name}: {e}")
+                print(f"Failed to fetch {name} from AkShare: {e}")
                 continue
 
-        circuit_breaker.record_success('index_daily')
-
     except Exception as e:
-        print(f"TuShare index fetch failed: {e}")
-        circuit_breaker.record_failure('index_daily')
+        print(f"AkShare index fetch failed: {e}")
 
     # US indices from yFinance (already implemented)
     try:
