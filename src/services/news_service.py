@@ -59,14 +59,31 @@ def _fetch_news_via_http(url: str, headers: dict = None, timeout: float = 10.0) 
     """
     Fetch JSON data from HTTP endpoint with timeout and error handling.
     Used as fallback when AkShare news functions fail.
+    Handles both pure JSON and JS variable assignment (e.g. var ajaxResult={...}).
     """
     if not HTTPX_AVAILABLE:
         return None
     try:
+        import re
         with httpx.Client(timeout=timeout) as client:
             resp = client.get(url, headers=headers or {})
             if resp.status_code == 200:
-                return resp.json()
+                # Try direct JSON first
+                try:
+                    return resp.json()
+                except Exception:
+                    pass
+
+                # Try to extract JSON from JS variable assignment
+                text = resp.text.strip()
+                # Match patterns like: var ajaxResult = {...};
+                match = re.search(r'=\s*(\{[\s\S]*\})\s*;?\s*$', text)
+                if match:
+                    import json
+                    try:
+                        return json.loads(match.group(1))
+                    except Exception:
+                        pass
     except Exception:
         pass
     return None
@@ -211,9 +228,9 @@ class NewsService:
 
     def get_hot_news(self, limit: int = 30) -> List[Dict]:
         """
-        Get hot/trending news from TuShare major_news.
+        Get hot/trending news.
 
-        Falls back to AkShare stock_info_global_cls if TuShare fails.
+        Priority: Eastmoney direct API (fastest, most reliable) > AkShare > TuShare.
         """
         cache_key = f"hot_news:{limit}"
         config = NEWS_CACHE_CONFIG[NewsCategory.HOT]
@@ -231,34 +248,10 @@ class NewsService:
 
         news_list = []
 
-        # Try TuShare major_news first
-        try:
-            if not circuit_breaker.is_open("major_news"):
-                end_date = format_date_yyyymmdd()
-                start_date = format_date_yyyymmdd(datetime.now() - timedelta(days=1))
+        # Try Eastmoney direct API first (fastest, no auth required)
+        news_list = self._fetch_hot_news_from_eastmoney(limit)
 
-                df = tushare_call_with_retry('major_news', src='', start_date=start_date, end_date=end_date)
-
-                if df is not None and not df.empty:
-                    circuit_breaker.record_success("major_news")
-                    for _, row in df.head(limit).iterrows():
-                        news_list.append({
-                            "id": generate_news_hash(row.get('title', ''), 'tushare', str(row.get('pub_time', ''))),
-                            "title": row.get('title', ''),
-                            "content": row.get('content', '')[:500] if row.get('content') else '',
-                            "source": "tushare",
-                            "source_name": row.get('src', '主流媒体'),
-                            "category": "hot",
-                            "published_at": str(row.get('pub_time', '')),
-                            "url": row.get('url', ''),
-                        })
-                else:
-                    circuit_breaker.record_failure("major_news")
-        except Exception as e:
-            print(f"TuShare major_news error: {e}")
-            circuit_breaker.record_failure("major_news")
-
-        # Fallback to AkShare if needed
+        # Fallback to AkShare if Eastmoney fails
         if not news_list:
             try:
                 import akshare as ak
@@ -283,14 +276,36 @@ class NewsService:
                             "url": "",
                         })
             except Exception as e:
-                # Don't print 404 errors - they indicate the external API has changed
-                # This is a known issue with AkShare news functions
                 if "404" not in str(e):
                     print(f"AkShare news fallback error: {e}")
 
-        # Second fallback: Try Eastmoney directly
+        # Last fallback: Try TuShare major_news
         if not news_list:
-            news_list = self._fetch_hot_news_from_eastmoney(limit)
+            try:
+                if not circuit_breaker.is_open("major_news"):
+                    end_date = format_date_yyyymmdd()
+                    start_date = format_date_yyyymmdd(datetime.now() - timedelta(days=1))
+
+                    df = tushare_call_with_retry('major_news', src='', start_date=start_date, end_date=end_date)
+
+                    if df is not None and not df.empty:
+                        circuit_breaker.record_success("major_news")
+                        for _, row in df.head(limit).iterrows():
+                            news_list.append({
+                                "id": generate_news_hash(row.get('title', ''), 'tushare', str(row.get('pub_time', ''))),
+                                "title": row.get('title', ''),
+                                "content": row.get('content', '')[:500] if row.get('content') else '',
+                                "source": "tushare",
+                                "source_name": row.get('src', '主流媒体'),
+                                "category": "hot",
+                                "published_at": str(row.get('pub_time', '')),
+                                "url": row.get('url', ''),
+                            })
+                    else:
+                        circuit_breaker.record_failure("major_news")
+            except Exception as e:
+                print(f"TuShare major_news error: {e}")
+                circuit_breaker.record_failure("major_news")
 
         # Cache results
         if news_list:
