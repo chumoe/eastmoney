@@ -1,5 +1,6 @@
 @echo off
 REM Build and export ARM64 image for Windows using Podman
+REM 优化：使用分层缓存加速第二次构建
 
 REM 设置镜像名称和版本
 set IMAGE_NAME=eastmoney
@@ -11,9 +12,15 @@ set EXPORT_FILE=eastmoney.tar
 
 echo Building ARM64 image: %FULL_IMAGE_NAME%
 echo.
+echo 提示：第二次构建将自动使用缓存层加速
+echo.
 
-REM 使用 podman buildx 构建 arm64 架构镜像
+REM 使用 podman build 构建 arm64 架构镜像
+REM --layers=true 启用分层缓存（默认已启用，显式指定确保生效）
+REM --cache-from 从现有镜像复用缓存层
 podman build --platform linux/arm64 ^
+    --layers=true ^
+    --cache-from %FULL_IMAGE_NAME% ^
     -t %FULL_IMAGE_NAME% ^
     .
 

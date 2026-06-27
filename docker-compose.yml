@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 使用已有镜像作为缓存源，加速第二次构建
+      cache_from:
+        - eastmoney:latest
+    image: eastmoney:latest
     container_name: eastmoney-app
     restart: unless-stopped
     network_mode: host

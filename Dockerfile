@@ -5,11 +5,24 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /build/web
 
-COPY web/ ./
+# 先复制包管理文件，最大化利用缓存（只有依赖变化时才重新 install）
+COPY web/package.json web/package-lock.json ./
 
-# 安装依赖并构建
-RUN npm install --registry=https://registry.npmmirror.com && \
-    npm run build
+# 安装依赖
+RUN npm install --registry=https://registry.npmmirror.com
+
+# 再复制源码和配置文件
+COPY web/index.html ./
+COPY web/vite.config.ts ./
+COPY web/tsconfig*.json ./
+COPY web/postcss.config.js ./
+COPY web/tailwind.config.js ./
+COPY web/eslint.config.js ./
+COPY web/public ./public
+COPY web/src ./src
+
+# 构建前端
+RUN npm run build
 
 # ====================================
 # 阶段 2: Python依赖预热 (可选，用于生成依赖快照)
@@ -56,15 +69,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 从依赖构建阶段复制Python包
 COPY --from=deps-builder /deps /usr/local
 
-# 复制应用源码
-COPY app/ ./app/
-COPY src/ ./src/
+# 从前端构建阶段复制构建好的静态文件（变化频率较低）
+COPY --from=frontend-builder /build/web/dist ./static
+
+# 复制配置文件（变化频率较低）
 COPY config/ ./config/
-COPY main.py .
 COPY .env.example .env
 
-# 从前端构建阶段复制构建好的静态文件
-COPY --from=frontend-builder /build/web/dist ./static
+# 复制应用源码（变化频率较高，放在最后）
+COPY app/ ./app/
+COPY src/ ./src/
+COPY main.py .
 
 # 创建必要的运行时目录
 RUN mkdir -p /app/data /app/reports /app/logs /app/config && \
