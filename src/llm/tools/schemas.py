@@ -273,37 +273,24 @@ def get_tools_for_llm(provider: str = "openai") -> List[Dict[str, Any]]:
     Convert tool schemas to LLM provider format.
 
     Args:
-        provider: LLM provider name ('openai' or 'gemini')
+        provider: LLM provider name ('openai', 'openai_compatible', or 'gemini')
 
     Returns:
         List of tool definitions in provider-specific format
     """
-    if provider == "openai" or provider == "openai_compatible":
-        # OpenAI function calling format
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": schema["description"],
-                    "parameters": schema["parameters"]
-                }
-            }
-            for name, schema in TOOL_SCHEMAS.items()
-        ]
-    elif provider == "gemini":
-        # Google Gemini function declarations format
-        return [
-            {
+    # Always use OpenAI format with "type": "function" for compatibility
+    # Most providers (including Gemini via API, OpenAI-compatible APIs) require this
+    return [
+        {
+            "type": "function",
+            "function": {
                 "name": name,
                 "description": schema["description"],
                 "parameters": schema["parameters"]
             }
-            for name, schema in TOOL_SCHEMAS.items()
-        ]
-    else:
-        # Default to OpenAI format
-        return get_tools_for_llm("openai")
+        }
+        for name, schema in TOOL_SCHEMAS.items()
+    ]
 
 
 def get_tool_names() -> List[str]:

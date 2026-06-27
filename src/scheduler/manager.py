@@ -81,6 +81,7 @@ class SchedulerManager:
         print("Starting Scheduler Manager...")
         self.refresh_all_jobs()
         self.add_dashboard_refresh_job()
+        self.add_market_snapshot_job()
         self.add_daily_snapshot_job()
         self.add_factor_computation_job()
 
@@ -97,6 +98,8 @@ class SchedulerManager:
             self.add_stock_jobs(stock)
         # Re-add dashboard job since we removed all
         self.add_dashboard_refresh_job()
+        # Re-add market snapshot job
+        self.add_market_snapshot_job()
         # Re-add daily snapshot job
         self.add_daily_snapshot_job()
         # Re-add factor computation job
@@ -115,6 +118,29 @@ class SchedulerManager:
                 coalesce=True
             )
             print("Scheduled dashboard cache refresh every 5 minutes")
+
+    def add_market_snapshot_job(self):
+        """Schedule market snapshot generation every 3 minutes"""
+        job_id = "market_snapshot"
+        if not self.scheduler.get_job(job_id):
+            self.scheduler.add_job(
+                self.refresh_market_snapshot,
+                trigger=IntervalTrigger(minutes=3),
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True
+            )
+            print("Scheduled market snapshot generation every 3 minutes")
+
+    def refresh_market_snapshot(self):
+        """Worker to refresh market snapshot"""
+        try:
+            from src.services.market_snapshot_service import market_snapshot_service
+            market_snapshot_service.refresh()
+            print("Market snapshot refreshed.")
+        except Exception as e:
+            print(f"Error refreshing market snapshot: {e}")
 
     def refresh_dashboard_cache(self):
         """Worker to refresh global dashboard cache"""

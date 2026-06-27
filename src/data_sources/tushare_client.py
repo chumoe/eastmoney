@@ -456,11 +456,9 @@ def get_fx_daily_tushare(
 
 def get_latest_trade_date(max_days_back: int = 30, offset: int = 0) -> Optional[str]:
     """
-    Get the most recent trading day (for non-trading days).
+    Get the most recent trading day.
 
-    This function finds the latest trading day that is <= today.
-    For example, if today is Saturday, it returns Friday's date.
-    If offset > 0, it returns the trading day N days before the latest.
+    First tries local calendar (fast, no API dependency), then falls back to TuShare.
 
     Args:
         max_days_back: Maximum days to look back
@@ -469,6 +467,13 @@ def get_latest_trade_date(max_days_back: int = 30, offset: int = 0) -> Optional[
     Returns:
         Trade date in YYYYMMDD format, or None if not found
     """
+    # Fast path: use local calendar
+    from src.data_sources.utils import get_latest_trade_date_local
+    local_result = get_latest_trade_date_local(max_days_back, offset)
+    if local_result:
+        return local_result
+
+    # Fallback: TuShare
     pro = _get_tushare_pro()
 
     try:

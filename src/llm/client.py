@@ -31,6 +31,7 @@ class ChatResponse:
     tool_calls: List[ToolCall]
     finish_reason: str  # "stop" or "tool_calls"
     raw_response: Any = None
+    reasoning_content: Optional[str] = None  # For thinking mode models
 
 
 class BaseLLMClient(ABC):
@@ -119,16 +120,38 @@ class GoogleGeminiClient(BaseLLMClient):
                         parts=[types.Part(text=content)]
                     ))
                 elif role == "assistant":
-                    contents.append(types.Content(
-                        role="model",
-                        parts=[types.Part(text=content)]
-                    ))
+                    parts = []
+                    # Handle tool calls in assistant message
+                    tool_calls = msg.get("tool_calls", [])
+                    if tool_calls:
+                        for tc in tool_calls:
+                            func = tc.get("function", {})
+                            try:
+                                args = json.loads(func.get("arguments", "{}")) if func.get("arguments") else {}
+                            except json.JSONDecodeError:
+                                args = {}
+                            parts.append(types.Part(
+                                function_call=types.FunctionCall(
+                                    name=func.get("name", ""),
+                                    args=args
+                                )
+                            ))
+                    # Add text content if present
+                    if content:
+                        parts.append(types.Part(text=content))
+                    contents.append(types.Content(role="model", parts=parts))
                 elif role == "tool":
                     # Tool result message
+                    # Gemini's FunctionResponse needs the function name
+                    tool_name = msg.get("name", "tool_response")
+                    try:
+                        response_data = json.loads(content) if content else {}
+                    except json.JSONDecodeError:
+                        response_data = {"result": content}
                     tool_response = types.Part(
                         function_response=types.FunctionResponse(
-                            name=msg.get("name", ""),
-                            response={"result": content}
+                            name=tool_name,
+                            response=response_data
                         )
                     )
                     contents.append(types.Content(role="user", parts=[tool_response]))
@@ -262,6 +285,9 @@ class OpenAIClient(BaseLLMClient):
             message = response.choices[0].message
             finish_reason = response.choices[0].finish_reason
 
+            # Extract reasoning_content for thinking mode models (o1, etc.)
+            reasoning_content = getattr(message, 'reasoning_content', None)
+
             tool_calls = []
             if message.tool_calls:
                 for tc in message.tool_calls:
@@ -281,7 +307,8 @@ class OpenAIClient(BaseLLMClient):
                 content=message.content,
                 tool_calls=tool_calls,
                 finish_reason="tool_calls" if tool_calls else "stop",
-                raw_response=response
+                raw_response=response,
+                reasoning_content=reasoning_content
             )
 
         except Exception as e:
