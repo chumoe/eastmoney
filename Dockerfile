@@ -1,7 +1,7 @@
 # ====================================
 # 阶段 1: 构建前端
 # ====================================
-FROM --platform=linux/amd64 node:20-alpine AS frontend-builder
+FROM --platform=linux/arm64 node:20-alpine AS frontend-builder
 
 WORKDIR /build/web
 
@@ -14,7 +14,7 @@ RUN npm install --registry=https://registry.npmmirror.com && \
 # ====================================
 # 阶段 2: Python依赖预热 (可选，用于生成依赖快照)
 # ====================================
-FROM --platform=linux/amd64 python:3.11-slim AS deps-builder
+FROM --platform=linux/arm64 python:3.11-slim AS deps-builder
 
 COPY requirements.txt .
 
@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # ====================================
 # 阶段 3: 运行时镜像 (精简，只包含运行时必要文件)
 # ====================================
-FROM --platform=linux/amd64 python:3.11-slim
+FROM --platform=linux/arm64 python:3.11-slim
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
