@@ -1,4 +1,6 @@
 @echo off
+REM 切换到 UTF-8 编码，解决中文乱码问题
+chcp 65001 >nul
 REM Build and export ARM64 image for Windows using Podman
 REM 优化：使用分层缓存加速第二次构建
 
