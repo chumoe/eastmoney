@@ -361,16 +361,11 @@ class FundRecommendationEngine:
             print(f"[FundEngine] Generating fallback recommendations using AkShare...")
 
             try:
-                if strategy == 'short_term':
-                    rank_df = ak.fund_open_fund_rank_em(symbol="全部", period="近一月")
-                else:
-                    rank_df = ak.fund_open_fund_rank_em(symbol="全部", period="近一年")
-            except Exception:
-                try:
-                    rank_df = ak.fund_open_fund_rank_em(symbol="股票型", period="近一月")
-                except Exception as e:
-                    print(f"[FundEngine] Fallback: Failed to fetch fund ranking: {e}")
-                    return []
+                # fund_open_fund_rank_em 返回全部基金排行，包含近1周/近1月/近3月/近6月/近1年等收益率
+                rank_df = ak.fund_open_fund_rank_em(symbol="全部")
+            except Exception as e:
+                print(f"[FundEngine] Fallback: Failed to fetch fund ranking: {e}")
+                return []
 
             if rank_df is None or rank_df.empty:
                 print("[FundEngine] Fallback: No fund ranking data")
