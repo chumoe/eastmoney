@@ -16,6 +16,7 @@ from src.storage.db import (
 from src.scheduler.manager import scheduler_manager
 from src.analysis.fund import FundDiagnosis, RiskMetricsCalculator, DrawdownAnalyzer, FundComparison
 from src.analysis.widget_service import widget_service
+from src.data_sources.akshare_api import get_all_stock_spot_map
 
 import asyncio
 
@@ -954,10 +955,9 @@ async def get_southbound_flow(current_user: User = Depends(get_current_user)):
 async def get_market_sentiment(current_user: User = Depends(get_current_user)):
     """
     Get market sentiment indicators (涨跌家数、涨停跌停).
+    使用缓存的股票实时数据，避免每次都拉取全市场5000+股票。
     """
     try:
-        loop = asyncio.get_running_loop()
-        
         sentiment = {
             'up_count': 0,
             'down_count': 0,
@@ -966,22 +966,42 @@ async def get_market_sentiment(current_user: User = Depends(get_current_user)):
             'limit_down': 0,
             'timestamp': datetime.now().isoformat(),
         }
-        
-        try:
-            # Get stock spot data to calculate up/down counts
-            df = await loop.run_in_executor(None, ak.stock_zh_a_spot_em)
-            
-            if df is not None and not df.empty:
-                df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
-                
-                sentiment['up_count'] = int((df['涨跌幅'] > 0).sum())
-                sentiment['down_count'] = int((df['涨跌幅'] < 0).sum())
-                sentiment['flat_count'] = int((df['涨跌幅'] == 0).sum())
-                sentiment['limit_up'] = int((df['涨跌幅'] >= 9.9).sum())
-                sentiment['limit_down'] = int((df['涨跌幅'] <= -9.9).sum())
-        except Exception as e:
-            print(f"Error calculating sentiment: {e}")
-        
+
+        # 使用缓存的股票数据（30秒TTL）
+        spot_map = get_all_stock_spot_map(cache_ttl_seconds=30)
+
+        if spot_map:
+            up_count = 0
+            down_count = 0
+            flat_count = 0
+            limit_up = 0
+            limit_down = 0
+
+            for code, data in spot_map.items():
+                try:
+                    zdf = float(data.get('涨跌幅', 0))
+                    if zdf > 0:
+                        up_count += 1
+                    elif zdf < 0:
+                        down_count += 1
+                    else:
+                        flat_count += 1
+
+                    if zdf >= 9.9:
+                        limit_up += 1
+                    elif zdf <= -9.9:
+                        limit_down += 1
+                except (ValueError, TypeError):
+                    continue
+
+            sentiment['up_count'] = up_count
+            sentiment['down_count'] = down_count
+            sentiment['flat_count'] = flat_count
+            sentiment['limit_up'] = limit_up
+            sentiment['limit_down'] = limit_down
+        else:
+            print("Stock spot map cache is empty, cannot calculate sentiment")
+
         return sentiment
     except Exception as e:
         print(f"Error fetching market sentiment: {e}")
