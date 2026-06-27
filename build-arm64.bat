@@ -2,12 +2,12 @@
 REM Build and export ARM64 image for Windows using Podman
 
 REM 设置镜像名称和版本
-set IMAGE_NAME=backend
-set IMAGE_TAG=arm64-latest
+set IMAGE_NAME=eastmoney
+set IMAGE_TAG=arm64
 set FULL_IMAGE_NAME=%IMAGE_NAME%:%IMAGE_TAG%
 
 REM 设置导出文件名
-set EXPORT_FILE=%IMAGE_NAME%-arm64.tar
+set EXPORT_FILE=eastmoney.tar
 
 echo Building ARM64 image: %FULL_IMAGE_NAME%
 echo.
