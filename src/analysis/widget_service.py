@@ -181,7 +181,7 @@ class WidgetDataService:
                         }
                         print(f"Southbound history: {len(valid)} days, latest={hist_latest['date']}")
 
-            # 2. 尝试用实时数据更新最新值
+            # 2. 尝试用实时数据补充分项数据
             try:
                 rt_df = ak.stock_hsgt_fund_flow_summary_em()
                 if rt_df is not None and not rt_df.empty:
@@ -190,42 +190,43 @@ class WidgetDataService:
                     if not south.empty:
                         hk_sh_net = 0.0
                         hk_sz_net = 0.0
+                        rt_date = None
 
                         if '板块' in south.columns:
-                            hk_sh_rows = south[south['板块'].str.contains('港股通(沪)', na=False)]
-                            hk_sz_rows = south[south['板块'].str.contains('港股通(深)', na=False)]
+                            hk_sh_rows = south[south['板块'].str.contains('港股通(沪)', na=False, regex=False)]
+                            hk_sz_rows = south[south['板块'].str.contains('港股通(深)', na=False, regex=False)]
                             if not hk_sh_rows.empty:
                                 hk_sh_net = self._safe_float(hk_sh_rows.iloc[0].get('成交净买额'))
+                                # 获取实时数据的日期
+                                if '交易日' in hk_sh_rows.columns:
+                                    rt_date = str(hk_sh_rows.iloc[0]['交易日'])
                             if not hk_sz_rows.empty:
                                 hk_sz_net = self._safe_float(hk_sz_rows.iloc[0].get('成交净买额'))
+                                if rt_date is None and '交易日' in hk_sz_rows.columns:
+                                    rt_date = str(hk_sz_rows.iloc[0]['交易日'])
 
                         total = hk_sh_net + hk_sz_net
-                        if total != 0:
-                            today_str = datetime.now().strftime("%Y-%m-%d")
-                            should_update = True
-                            if hist_latest and hist_latest.get('date'):
-                                try:
-                                    hist_date = datetime.strptime(hist_latest['date'], '%Y-%m-%d').date()
-                                    today_date = datetime.now().date()
-                                    if today_date <= hist_date:
-                                        should_update = False
-                                except ValueError:
-                                    pass
 
-                            if should_update:
-                                hist_latest = {
-                                    "date": today_str,
-                                    "south_money": round(total, 2),
-                                    "hk_sh_net": round(hk_sh_net, 2),
-                                    "hk_sz_net": round(hk_sz_net, 2),
-                                }
-                                new_history = [{"date": today_str, "south_money": round(total, 2)}]
-                                new_history.extend(history[:days-1])
-                                history = new_history
-                                cumulative_5d = round(
-                                    sum(item["south_money"] for item in history[:5]), 2
-                                )
-                                print(f"Southbound realtime update: date={today_str}, net={total:.2f}亿")
+                        if hist_latest is not None:
+                            hist_date = hist_latest.get('date', '')
+                            # 如果实时数据有分项，且日期 >= 历史最新日期，更新分项数据
+                            if (hk_sh_net != 0 or hk_sz_net != 0) and rt_date and rt_date >= hist_date:
+                                hist_latest['hk_sh_net'] = round(hk_sh_net, 2)
+                                hist_latest['hk_sz_net'] = round(hk_sz_net, 2)
+                                # 如果日期更新，同时更新总额和日期
+                                if rt_date > hist_date:
+                                    hist_latest['date'] = rt_date
+                                    hist_latest['south_money'] = round(total, 2)
+                                    new_history = [{"date": rt_date, "south_money": round(total, 2)}]
+                                    new_history.extend(history[:days-1])
+                                    history = new_history
+                                    cumulative_5d = round(
+                                        sum(item["south_money"] for item in history[:5]), 2
+                                    )
+                                    print(f"Southbound realtime update: date={rt_date}, net={total:.2f}亿")
+                                else:
+                                    # 同一天，只更新分项
+                                    print(f"Southbound realtime: updated components for {rt_date}")
 
             except Exception as rt_e:
                 print(f"Southbound realtime error: {rt_e}")
