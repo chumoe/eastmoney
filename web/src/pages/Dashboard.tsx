@@ -26,7 +26,7 @@ const DEFAULT_WIDGETS: WidgetConfig[] = [
     // Row 1-6: Main Data - Capital Flow (increased height)
     { id: 'mainflow', type: 'main_capital_flow', position: { x: 0, y: 1, w: 4, h: 6 } },
     { id: 'sectors', type: 'sector_performance', position: { x: 4, y: 1, w: 4, h: 6 } },
-    { id: 'northbound', type: 'northbound_flow', position: { x: 8, y: 1, w: 4, h: 6 } },
+    { id: 'southbound', type: 'southbound_flow', position: { x: 8, y: 1, w: 4, h: 6 } },
 
     // Row 7-9: Alert Banner (stream)
     { id: 'abnormal', type: 'abnormal_movements', position: { x: 0, y: 7, w: 12, h: 3 } },

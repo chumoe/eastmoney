@@ -24,10 +24,10 @@ DASHBOARD_PRESETS = {
     "trader": {
         "name": "交易者视图",
         "name_en": "Trader View",
-        "description": "实时异动、北向资金、龙虎榜、行业资金流",
+        "description": "实时异动、南向资金、龙虎榜、行业资金流",
         "widgets": [
             {"id": "abnormal", "type": "abnormal_movements", "position": {"x": 0, "y": 0, "w": 6, "h": 4}},
-            {"id": "northbound", "type": "northbound_flow", "position": {"x": 6, "y": 0, "w": 6, "h": 4}},
+            {"id": "southbound", "type": "southbound_flow", "position": {"x": 6, "y": 0, "w": 6, "h": 4}},
             {"id": "toplist", "type": "top_list", "position": {"x": 0, "y": 4, "w": 8, "h": 4}},
             {"id": "industry", "type": "industry_flow", "position": {"x": 8, "y": 4, "w": 4, "h": 4}},
         ]
@@ -46,12 +46,12 @@ DASHBOARD_PRESETS = {
     "macro": {
         "name": "宏观视图",
         "name_en": "Macro View",
-        "description": "市场指数、外汇汇率、黄金宏观、北向资金",
+        "description": "市场指数、外汇汇率、黄金宏观、南向资金",
         "widgets": [
             {"id": "indices", "type": "market_indices", "position": {"x": 0, "y": 0, "w": 10, "h": 2}},
             {"id": "gold", "type": "gold_macro", "position": {"x": 10, "y": 0, "w": 2, "h": 2}},
             {"id": "forex", "type": "forex_rates", "position": {"x": 0, "y": 2, "w": 5, "h": 4}},
-            {"id": "northbound", "type": "northbound_flow", "position": {"x": 5, "y": 2, "w": 7, "h": 4}},
+            {"id": "southbound", "type": "southbound_flow", "position": {"x": 5, "y": 2, "w": 7, "h": 4}},
         ]
     },
     "compact": {

@@ -33,7 +33,7 @@ const CATEGORY_ORDER: Record<string, number> = {
 // Smart size overrides for specific widgets
 const SMART_SIZE_MAP: Record<WidgetType, { w: number; h: number }> = {
     market_indices: { w: 6, h: 2 },      // banner - can be 6 or 12 wide
-    northbound_flow: { w: 6, h: 4 },     // chart
+    southbound_flow: { w: 6, h: 4 },     // chart
     industry_flow: { w: 6, h: 4 },       // chart
     sector_performance: { w: 6, h: 4 },  // chart
     top_list: { w: 6, h: 4 },            // table
@@ -53,7 +53,7 @@ const EXPANDABLE_WIDGETS: Set<WidgetType> = new Set([
     'abnormal_movements',
     'sector_performance',
     'main_capital_flow',
-    'northbound_flow',
+    'southbound_flow',
     'top_list',
     'watchlist',
     'news',
@@ -291,7 +291,7 @@ export function getWidgetTypesByDisplayCategory(): Record<string, WidgetType[]> 
 
     // Use the existing category grouping from registry
     categories.market = ['market_indices', 'market_sentiment', 'sector_performance'];
-    categories.capital = ['northbound_flow', 'industry_flow', 'main_capital_flow', 'top_list'];
+    categories.capital = ['southbound_flow', 'industry_flow', 'main_capital_flow', 'top_list'];
     categories.macro = ['gold_macro', 'forex_rates'];
     categories.signals = ['abnormal_movements', 'news'];
     categories.personal = ['watchlist', 'system_stats'];
