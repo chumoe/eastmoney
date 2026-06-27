@@ -106,3 +106,18 @@ async def get_widget_main_capital_flow(limit: int = 10):
     except Exception as e:
         print(f"Error fetching main capital flow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dashboard-bundle")
+async def get_dashboard_bundle(limit: int = 10, days: int = 5):
+    """
+    Dashboard 聚合接口：一次性返回所有 widget 数据。
+
+    减少 HTTP 请求数，所有数据走缓存，加载更快。
+    """
+    try:
+        data = await asyncio.to_thread(widget_service.get_dashboard_bundle, limit, days)
+        return sanitize_data(data)
+    except Exception as e:
+        print(f"Error fetching dashboard bundle: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

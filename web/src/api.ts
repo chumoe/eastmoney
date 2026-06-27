@@ -1074,6 +1074,11 @@ export const fetchWidgetNews = async (limit: number = 20, src: string = 'sina'):
     return response.data;
 };
 
+export const fetchDashboardBundle = async (limit: number = 10, days: number = 5): Promise<any> => {
+    const response = await api.get('/widgets/dashboard-bundle', { params: { limit, days } });
+    return response.data;
+};
+
 export const fetchWidgetMainCapitalFlow = async (limit: number = 10): Promise<MainCapitalFlowData> => {
     const response = await api.get('/widgets/main-capital-flow', { params: { limit } });
     return response.data;

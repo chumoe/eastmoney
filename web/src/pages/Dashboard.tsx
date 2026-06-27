@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     Box,
     Typography,
     Chip,
     IconButton,
+    CircularProgress,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import GridLayout from 'react-grid-layout';
@@ -15,6 +16,8 @@ import 'react-resizable/css/styles.css';
 
 import type { WidgetConfig } from '../widgets/types';
 import { getWidgetComponent } from '../widgets/registry';
+import { DashboardBundleContext, type DashboardBundleData } from '../widgets/DashboardBundleContext';
+import { fetchDashboardBundle } from '../api';
 
 // Fixed layout with widgets (compact view)
 const DEFAULT_WIDGETS: WidgetConfig[] = [
@@ -39,6 +42,27 @@ export default function DashboardPage() {
     const { t } = useTranslation();
     const [containerWidth, setContainerWidth] = useState(1200);
     const [refreshKey, setRefreshKey] = useState(0);
+    const [bundleData, setBundleData] = useState<DashboardBundleData | null>(null);
+    const [bundleLoading, setBundleLoading] = useState(true);
+
+    // Load dashboard bundle (aggregated data)
+    const loadBundle = useCallback(async () => {
+        try {
+            const data = await fetchDashboardBundle();
+            setBundleData(data);
+        } catch (err) {
+            console.error('Failed to load dashboard bundle:', err);
+        } finally {
+            setBundleLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadBundle();
+        // Auto refresh every 60s during market hours
+        const timer = setInterval(loadBundle, 60000);
+        return () => clearInterval(timer);
+    }, [loadBundle, refreshKey]);
 
     // Handle container resize
     useEffect(() => {
@@ -66,6 +90,7 @@ export default function DashboardPage() {
 
     // Refresh all data
     const handleRefresh = () => {
+        setBundleLoading(true);
         setRefreshKey(prev => prev + 1);
     };
 
@@ -83,6 +108,9 @@ export default function DashboardPage() {
                         color="success"
                         className="h-5 text-[10px] font-bold"
                     />
+                    {bundleLoading && (
+                        <CircularProgress size={14} thickness={4} className="text-slate-400" />
+                    )}
                 </Box>
                 <Box className="flex items-center gap-2">
                     <IconButton
@@ -97,38 +125,40 @@ export default function DashboardPage() {
 
             {/* Widget Grid */}
             <Box className="relative">
-                <GridLayout
-                    className="layout"
-                    layout={layoutItems}
-                    width={containerWidth}
-                    gridConfig={{
-                        cols: 12,
-                        rowHeight: 70,
-                        margin: [12, 12],
-                    }}
-                    dragConfig={{
-                        enabled: false,
-                    }}
-                    resizeConfig={{
-                        enabled: false,
-                    }}
-                >
-                    {DEFAULT_WIDGETS.map((widget) => {
-                        const WidgetComponent = getWidgetComponent(widget.type);
-                        if (!WidgetComponent) return null;
+                <DashboardBundleContext.Provider value={bundleData}>
+                    <GridLayout
+                        className="layout"
+                        layout={layoutItems}
+                        width={containerWidth}
+                        gridConfig={{
+                            cols: 12,
+                            rowHeight: 70,
+                            margin: [12, 12],
+                        }}
+                        dragConfig={{
+                            enabled: false,
+                        }}
+                        resizeConfig={{
+                            enabled: false,
+                        }}
+                    >
+                        {DEFAULT_WIDGETS.map((widget) => {
+                            const WidgetComponent = getWidgetComponent(widget.type);
+                            if (!WidgetComponent) return null;
 
-                        return (
-                            <div key={widget.id} className="relative">
-                                <WidgetComponent
-                                    key={refreshKey}
-                                    id={widget.id}
-                                    config={widget}
-                                    isEditing={false}
-                                />
-                            </div>
-                        );
-                    })}
-                </GridLayout>
+                            return (
+                                <div key={widget.id} className="relative">
+                                    <WidgetComponent
+                                        key={refreshKey}
+                                        id={widget.id}
+                                        config={widget}
+                                        isEditing={false}
+                                    />
+                                </div>
+                            );
+                        })}
+                    </GridLayout>
+                </DashboardBundleContext.Provider>
             </Box>
         </Box>
     );

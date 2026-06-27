@@ -9,7 +9,8 @@ import ArrowDropUpIcon from '@mui/icons-material/ArrowDropUp';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import { useTranslation } from 'react-i18next';
 import type{ WidgetProps, SectorPerformanceData } from '../types';
-import WidgetContainer, { useWidgetData } from '../WidgetContainer';
+import WidgetContainer from '../WidgetContainer';
+import { useWidgetDataFromBundle } from '../useWidgetDataFromBundle';
 import { fetchWidgetSectorPerformance } from '../../api';
 
 export default function SectorPerformanceWidget({ id, config, isEditing }: WidgetProps) {
@@ -18,7 +19,8 @@ export default function SectorPerformanceWidget({ id, config, isEditing }: Widge
     // Increase default limit to 20 to fill vertical space
     const limit = (config.settings?.limit as number) || 20;
 
-    const { data, loading, error, lastUpdated, refresh } = useWidgetData<SectorPerformanceData>(
+    const { data, loading, error, lastUpdated, refresh } = useWidgetDataFromBundle<SectorPerformanceData>(
+        'sector_performance',
         () => fetchWidgetSectorPerformance(limit),
         config.refreshInterval ? config.refreshInterval * 1000 : 600000
     );

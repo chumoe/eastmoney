@@ -1179,6 +1179,45 @@ class WidgetDataService:
             circuit_breaker.record_failure(config.api_name)
             return {"error": str(e), "news": []}
 
+    def get_dashboard_bundle(self, limit: int = 10, days: int = 5) -> Dict[str, Any]:
+        """
+        Dashboard 聚合接口：一次性返回所有 widget 数据，减少 HTTP 请求数。
+
+        所有数据都走各自的缓存，第一次加载时并行获取，之后直接读缓存。
+        """
+        cache_key = f"dashboard_bundle:{limit}:{days}"
+
+        # 休市时缓存更久
+        bundle_ttl = 60 if self._is_market_open() else 3600
+        cached = self._get_cache(cache_key)
+        if cached:
+            return cached
+
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            future_southbound = executor.submit(self.get_southbound_flow, days)
+            future_industry = executor.submit(self.get_industry_flow, limit)
+            future_sector = executor.submit(self.get_sector_performance, limit)
+            future_toplist = executor.submit(self.get_top_list, limit)
+            future_mainflow = executor.submit(self.get_main_capital_flow, limit)
+            future_forex = executor.submit(self.get_forex_rates)
+            future_news = executor.submit(self.get_news, 20, 'sina')
+
+            result = {
+                "southbound_flow": future_southbound.result(),
+                "industry_flow": future_industry.result(),
+                "sector_performance": future_sector.result(),
+                "top_list": future_toplist.result(),
+                "main_capital_flow": future_mainflow.result(),
+                "forex_rates": future_forex.result(),
+                "news": future_news.result(),
+                "updated_at": datetime.now().isoformat(),
+            }
+
+        self._set_cache(cache_key, result, bundle_ttl)
+        return result
+
 
 # Singleton instance
 widget_service = WidgetDataService()

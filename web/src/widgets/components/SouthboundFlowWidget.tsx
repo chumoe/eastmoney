@@ -9,14 +9,16 @@ import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import { useTranslation } from 'react-i18next';
 import type{ WidgetProps, SouthboundFlowData } from '../types';
-import WidgetContainer, { useWidgetData } from '../WidgetContainer';
+import WidgetContainer from '../WidgetContainer';
+import { useWidgetDataFromBundle } from '../useWidgetDataFromBundle';
 import { fetchWidgetSouthboundFlow } from '../../api';
 
 export default function SouthboundFlowWidget({ id, config, isEditing }: WidgetProps) {
     const { t, i18n } = useTranslation();
     const isZh = i18n.language === 'zh';
 
-    const { data, loading, error, lastUpdated, refresh } = useWidgetData<SouthboundFlowData>(
+    const { data, loading, error, lastUpdated, refresh } = useWidgetDataFromBundle<SouthboundFlowData>(
+        'southbound_flow',
         () => fetchWidgetSouthboundFlow(5),
         config.refreshInterval ? config.refreshInterval * 1000 : 300000
     );

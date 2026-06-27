@@ -8,7 +8,8 @@ import { Box, Typography, Chip } from '@mui/material';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import { useTranslation } from 'react-i18next';
 import type{ WidgetProps, MainCapitalFlowData } from '../types';
-import WidgetContainer, { useWidgetData } from '../WidgetContainer';
+import WidgetContainer from '../WidgetContainer';
+import { useWidgetDataFromBundle } from '../useWidgetDataFromBundle';
 import { fetchWidgetMainCapitalFlow } from '../../api';
 
 const NumberMono = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => (
@@ -31,7 +32,8 @@ export default function MainCapitalFlowWidget({ id, config, isEditing }: WidgetP
     const isZh = i18n.language === 'zh';
     const limit = (config.settings?.limit as number) || 10;
 
-    const { data, loading, error, lastUpdated, refresh } = useWidgetData<MainCapitalFlowData>(
+    const { data, loading, error, lastUpdated, refresh } = useWidgetDataFromBundle<MainCapitalFlowData>(
+        'main_capital_flow',
         () => fetchWidgetMainCapitalFlow(limit),
         config.refreshInterval ? config.refreshInterval * 1000 : 300000
     );

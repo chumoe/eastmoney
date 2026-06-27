@@ -8,7 +8,8 @@ import { Box, Typography, Chip } from '@mui/material';
 import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
 import { useTranslation } from 'react-i18next';
 import type{ WidgetProps, TopListData } from '../types';
-import WidgetContainer, { useWidgetData } from '../WidgetContainer';
+import WidgetContainer from '../WidgetContainer';
+import { useWidgetDataFromBundle } from '../useWidgetDataFromBundle';
 import { fetchWidgetTopList } from '../../api';
 
 export default function TopListWidget({ id, config, isEditing }: WidgetProps) {
@@ -16,7 +17,8 @@ export default function TopListWidget({ id, config, isEditing }: WidgetProps) {
     const isZh = i18n.language === 'zh';
     const limit = (config.settings?.limit as number) || 20;
 
-    const { data, loading, error, lastUpdated, refresh } = useWidgetData<TopListData>(
+    const { data, loading, error, lastUpdated, refresh } = useWidgetDataFromBundle<TopListData>(
+        'top_list',
         () => fetchWidgetTopList(limit),
         config.refreshInterval ? config.refreshInterval * 1000 : 3600000
     );
