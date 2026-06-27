@@ -47,6 +47,30 @@ from src.llm.client import get_llm_client
 # Import settings
 from config.settings import TAVILY_API_KEY
 
+# Optional HTTP client for fallback news (used when AkShare fails)
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+
+
+def _fetch_news_via_http(url: str, headers: dict = None, timeout: float = 10.0) -> Optional[dict]:
+    """
+    Fetch JSON data from HTTP endpoint with timeout and error handling.
+    Used as fallback when AkShare news functions fail.
+    """
+    if not HTTPX_AVAILABLE:
+        return None
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(url, headers=headers or {})
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return None
+
 
 class NewsCategory(str, Enum):
     """News categories for filtering"""
@@ -146,6 +170,45 @@ class NewsService:
     # Core News Fetching Methods
     # =========================================================================
 
+    def _fetch_hot_news_from_eastmoney(self, limit: int = 30) -> List[Dict]:
+        """
+        Fetch hot news directly from Eastmoney API.
+        Used as fallback when both TuShare and AkShare fail.
+        """
+        news_list = []
+
+        try:
+            # Eastmoney hot news API (global finance)
+            url = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_101_ajaxResult_50_1_.html"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://finance.eastmoney.com/",
+            }
+            data = _fetch_news_via_http(url, headers)
+            if data and data.get("LivesList"):
+                for item in data["LivesList"][:limit]:
+                    title = item.get("title", "")
+                    content = item.get("digest", "") or item.get("title", "")
+                    pub_time = item.get("showtime", "") or item.get("ctime", "")
+
+                    if not title or len(title) < 5:
+                        continue
+
+                    news_list.append({
+                        "id": generate_news_hash(title, 'eastmoney', pub_time),
+                        "title": title,
+                        "content": content[:500],
+                        "source": "eastmoney",
+                        "source_name": "东方财富",
+                        "category": "hot",
+                        "published_at": str(pub_time),
+                        "url": item.get("url", ""),
+                    })
+        except Exception as e:
+            print(f"Eastmoney news fallback error: {e}")
+
+        return news_list
+
     def get_hot_news(self, limit: int = 30) -> List[Dict]:
         """
         Get hot/trending news from TuShare major_news.
@@ -225,6 +288,10 @@ class NewsService:
                 if "404" not in str(e):
                     print(f"AkShare news fallback error: {e}")
 
+        # Second fallback: Try Eastmoney directly
+        if not news_list:
+            news_list = self._fetch_hot_news_from_eastmoney(limit)
+
         # Cache results
         if news_list:
             self._set_cache(cache_key, news_list, config.ttl)
@@ -232,11 +299,47 @@ class NewsService:
 
         return news_list
 
+    def _fetch_realtime_news_from_eastmoney(self, limit: int = 50) -> List[Dict]:
+        """
+        Fetch realtime news directly from Eastmoney API.
+        """
+        news_list = []
+        try:
+            # Eastmoney realtime news API
+            url = "https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://finance.eastmoney.com/",
+            }
+            data = _fetch_news_via_http(url, headers)
+            if data and data.get("LivesList"):
+                for item in data["LivesList"][:limit]:
+                    title = item.get("title", "")
+                    content = item.get("digest", "") or item.get("title", "")
+                    pub_time = item.get("showtime", "") or item.get("ctime", "")
+
+                    if not title or len(title) < 5:
+                        continue
+
+                    news_list.append({
+                        "id": generate_news_hash(title, 'realtime_eastmoney', pub_time),
+                        "title": title,
+                        "content": content[:500],
+                        "source": "eastmoney",
+                        "source_name": "东方财富",
+                        "category": "realtime",
+                        "published_at": str(pub_time),
+                        "url": item.get("url", ""),
+                    })
+        except Exception as e:
+            print(f"Eastmoney realtime news fallback error: {e}")
+        return news_list
+
     def get_realtime_news(self, limit: int = 50) -> List[Dict]:
         """
-        Get realtime global financial news from AkShare.
-        
-        Uses stock_info_global_em (东方财富-全球财经快讯) which returns latest 200 items.
+        Get realtime global financial news.
+
+        Uses AkShare stock_info_global_em first, falls back to Eastmoney direct API.
         """
         cache_key = f"realtime_news:{limit}"
         config = NEWS_CACHE_CONFIG[NewsCategory.REALTIME]
@@ -250,7 +353,7 @@ class NewsService:
 
         try:
             import akshare as ak
-            
+
             # Get global financial news (latest 200)
             df = ak.stock_info_global_em()
             if df is not None and not df.empty:
@@ -274,12 +377,17 @@ class NewsService:
                         "url": url,
                     })
         except Exception as e:
-            print(f"Realtime news fetch error: {e}")
+            if "404" not in str(e):
+                print(f"Realtime news fetch error: {e}")
+
+        # Fallback to Eastmoney directly if AkShare fails
+        if not news_list:
+            news_list = self._fetch_realtime_news_from_eastmoney(limit)
 
         # Cache results
         if news_list:
             self._set_cache(cache_key, news_list, config.ttl)
-            set_news_cache(cache_key, news_list, "akshare", config.ttl)
+            set_news_cache(cache_key, news_list, "mixed", config.ttl)
 
         return news_list
 
