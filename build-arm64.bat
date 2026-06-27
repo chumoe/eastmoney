@@ -15,7 +15,7 @@ echo.
 REM 使用 podman buildx 构建 arm64/v8 架构镜像
 podman buildx build --platform linux/arm64/v8 ^
     -t %FULL_IMAGE_NAME% ^
-    -f docker/backend.Dockerfile ^
+    -f Dockerfile ^
     --load ^
     .
 
