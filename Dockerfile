@@ -16,6 +16,14 @@ RUN npm install --registry=https://registry.npmmirror.com && \
 # ====================================
 FROM python:3.11-slim AS deps-builder
 
+# 安装编译工具（ARM64构建需要从源码编译部分包）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libffi-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt \
@@ -26,6 +34,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
 # 阶段 3: 运行时镜像 (精简，只包含运行时必要文件)
 # ====================================
 FROM python:3.11-slim
+
+WORKDIR /app
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -46,11 +56,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 从依赖构建阶段复制Python包
 COPY --from=deps-builder /deps /usr/local
 
+# 复制应用源码
+COPY app/ ./app/
+COPY src/ ./src/
+COPY config/ ./config/
+COPY main.py .
+COPY .env.example .env
+
 # 从前端构建阶段复制构建好的静态文件
 COPY --from=frontend-builder /build/web/dist ./static
 
 # 创建必要的运行时目录
-RUN mkdir -p /app/data /app/reports /app/logs && \
+RUN mkdir -p /app/data /app/reports /app/logs /app/config && \
     chmod -R 755 /app
 
 # 暴露端口
@@ -61,4 +78,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:9000/api/health || exit 1
 
 # 启动命令
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000"]

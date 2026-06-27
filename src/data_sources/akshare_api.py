@@ -253,60 +253,186 @@ def get_northbound_flow() -> Dict:
     # Fallback to AkShare
     result = {}
     try:
+        # ==========================================
         # 方案1：使用实时汇总数据（最可靠）
+        # ==========================================
         df = ak.stock_hsgt_fund_flow_summary_em()
-        if not df.empty:
-            # 筛选北向资金（沪股通+深股通）
-            north = df[df['资金方向'] == '北向']
-            if not north.empty:
-                total_net = 0
-                for _, row in north.iterrows():
-                    board = row.get('板块', '')
-                    net_buy = row.get('成交净买额', 0)
-                    try:
-                        net_buy = float(net_buy) if net_buy else 0
-                    except:
-                        net_buy = 0
-                    total_net += net_buy
-                    result[board] = {
-                        '成交净买额': f"{net_buy:.2f}亿",
-                        '交易状态': '交易中' if row.get('交易状态') == 1 else '休市',
-                        '相关指数': row.get('相关指数', 'N/A'),
-                        '指数涨跌幅': f"{row.get('指数涨跌幅', 0)}%"
-                    }
-                result['最新净流入'] = f"{total_net:.2f}亿"
-                # 确保日期是字符串格式
-                trade_date = df.iloc[0].get('交易日', 'N/A')
-                if hasattr(trade_date, 'strftime'):
-                    trade_date = trade_date.strftime('%Y-%m-%d')
-                result['数据日期'] = str(trade_date)
+        if df is not None and not df.empty:
+            # 兼容不同的列名
+            direction_col = '资金方向' if '资金方向' in df.columns else ('方向' if '方向' in df.columns else None)
+            net_col = None
+            for col in ['成交净买额', '净买额', '净流入', '当日净流入']:
+                if col in df.columns:
+                    net_col = col
+                    break
+            board_col = '板块' if '板块' in df.columns else None
+            date_col = None
+            for col in ['交易日', '日期', 'trade_date']:
+                if col in df.columns:
+                    date_col = col
+                    break
 
-        # 方案2：获取历史数据计算5日累计（如果方案1成功后补充）
-        if result:
-            try:
-                hist_df = ak.stock_hsgt_hist_em(symbol="北向资金")
-                if hist_df is not None and not hist_df.empty:
-                    # 获取最近有数据的5日
-                    # 检查哪个列有净流入数据
-                    flow_col = None
-                    for col in ['当日成交净买额', '当日资金流入', '资金流入']:
-                        if col in hist_df.columns:
-                            # 过滤掉NaN值
-                            valid = hist_df[hist_df[col].notna()]
-                            if not valid.empty:
-                                flow_col = col
-                                recent = valid.tail(5)
+            if direction_col and net_col:
+                # 筛选北向资金
+                north = df[df[direction_col] == '北向']
+                if not north.empty:
+                    hgt_net = 0
+                    sgt_net = 0
+
+                    # 分别获取沪股通和深股通
+                    if board_col:
+                        hgt_rows = north[north[board_col].str.contains('沪股通', na=False)]
+                        sgt_rows = north[north[board_col].str.contains('深股通', na=False)]
+                        if not hgt_rows.empty:
+                            try:
+                                hgt_net = float(hgt_rows.iloc[0].get(net_col, 0) or 0)
+                            except (ValueError, TypeError):
+                                hgt_net = 0
+                        if not sgt_rows.empty:
+                            try:
+                                sgt_net = float(sgt_rows.iloc[0].get(net_col, 0) or 0)
+                            except (ValueError, TypeError):
+                                sgt_net = 0
+
+                    total_net = hgt_net + sgt_net
+
+                    # 如果没找到分项，尝试直接遍历求和
+                    if total_net == 0:
+                        for _, row in north.iterrows():
+                            try:
+                                total_net += float(row.get(net_col, 0) or 0)
+                            except (ValueError, TypeError):
+                                pass
+
+                    # 填充结果
+                    if board_col:
+                        for _, row in north.iterrows():
+                            board = str(row.get(board_col, ''))
+                            try:
+                                net_buy = float(row.get(net_col, 0) or 0)
+                            except (ValueError, TypeError):
+                                net_buy = 0
+                            result[board] = {
+                                '成交净买额': f"{net_buy:.2f}亿",
+                                '交易状态': '交易中' if row.get('交易状态') == 1 else '休市',
+                                '相关指数': str(row.get('相关指数', 'N/A')),
+                                '指数涨跌幅': f"{row.get('指数涨跌幅', 0)}%"
+                            }
+
+                    result['最新净流入'] = f"{total_net:.2f}亿"
+
+                    # 数据日期
+                    if date_col:
+                        trade_date = north.iloc[0].get(date_col, 'N/A')
+                        if hasattr(trade_date, 'strftime'):
+                            trade_date = trade_date.strftime('%Y-%m-%d')
+                        result['数据日期'] = str(trade_date)
+                    else:
+                        result['数据日期'] = datetime.now().strftime('%Y-%m-%d')
+
+        # ==========================================
+        # 方案2：获取历史数据计算5日累计
+        # ==========================================
+        try:
+            # 分别获取沪股通和深股通历史数据再合并
+            hgt_hist = None
+            sgt_hist = None
+
+            for symbol in ["沪股通", "深股通"]:
+                try:
+                    hist_df = ak.stock_hsgt_hist_em(symbol=symbol)
+                    if hist_df is not None and not hist_df.empty:
+                        if symbol == "沪股通":
+                            hgt_hist = hist_df
+                        else:
+                            sgt_hist = hist_df
+                except Exception as e:
+                    print(f"{symbol} history fetch error: {e}")
+
+            total_5d = 0
+            if hgt_hist is not None and sgt_hist is not None:
+                # 找出净流入列
+                def _find_flow_col(df):
+                    priority = ['当日成交净买额', '成交净买额', '当日资金流入', '当日净流入', '净买额', '净流入', '资金流入']
+                    for pattern in priority:
+                        for col in df.columns:
+                            if pattern in col and '累计' not in col:
                                 try:
-                                    total_5d = recent[col].astype(float).sum()
-                                    result['5日累计净流入'] = f"{total_5d:.2f}亿"
-                                except:
-                                    pass
-                                break
-            except Exception as e:
-                print(f"Historical northbound data failed: {e}")
+                                    vals = pd.to_numeric(df[col], errors='coerce')
+                                    if vals.notna().any():
+                                        return col
+                                except Exception:
+                                    continue
+                    return None
+
+                hgt_col = _find_flow_col(hgt_hist)
+                sgt_col = _find_flow_col(sgt_hist)
+
+                if hgt_col and sgt_col:
+                    # 统一日期列
+                    date_col_h = '日期' if '日期' in hgt_hist.columns else hgt_hist.columns[0]
+                    date_col_s = '日期' if '日期' in sgt_hist.columns else sgt_hist.columns[0]
+
+                    hgt_hist = hgt_hist.rename(columns={date_col_h: '日期'})
+                    sgt_hist = sgt_hist.rename(columns={date_col_s: '日期'})
+
+                    hgt_hist['日期'] = pd.to_datetime(hgt_hist['日期'], errors='coerce').dt.date
+                    sgt_hist['日期'] = pd.to_datetime(sgt_hist['日期'], errors='coerce').dt.date
+
+                    hgt_hist['_flow'] = pd.to_numeric(hgt_hist[hgt_col], errors='coerce')
+                    sgt_hist['_flow'] = pd.to_numeric(sgt_hist[sgt_col], errors='coerce')
+
+                    # 按日期合并
+                    merged = pd.merge(
+                        hgt_hist[['日期', '_flow']].rename(columns={'_flow': 'hgt'}),
+                        sgt_hist[['日期', '_flow']].rename(columns={'_flow': 'sgt'}),
+                        on='日期', how='outer'
+                    )
+                    merged['north'] = merged['hgt'].fillna(0) + merged['sgt'].fillna(0)
+                    merged = merged.sort_values('日期', ascending=False)
+
+                    recent_5 = merged.head(5)
+                    total_5d = recent_5['north'].sum()
+
+            # 如果分别获取失败，尝试直接用"北向资金"
+            if total_5d == 0:
+                try:
+                    direct_df = ak.stock_hsgt_hist_em(symbol="北向资金")
+                    if direct_df is not None and not direct_df.empty:
+                        def _find_flow_col_direct(df):
+                            priority = ['当日成交净买额', '成交净买额', '当日资金流入', '当日净流入', '净买额', '净流入', '资金流入']
+                            for pattern in priority:
+                                for col in df.columns:
+                                    if pattern in col and '累计' not in col:
+                                        try:
+                                            vals = pd.to_numeric(df[col], errors='coerce')
+                                            if vals.notna().any():
+                                                return col
+                                        except Exception:
+                                            continue
+                            return None
+
+                        flow_col = _find_flow_col_direct(direct_df)
+                        if flow_col:
+                            date_col_d = '日期' if '日期' in direct_df.columns else direct_df.columns[0]
+                            direct_df = direct_df.rename(columns={date_col_d: '日期'})
+                            direct_df['日期'] = pd.to_datetime(direct_df['日期'], errors='coerce').dt.date
+                            direct_df['_flow'] = pd.to_numeric(direct_df[flow_col], errors='coerce')
+                            direct_df = direct_df.sort_values('日期', ascending=False)
+                            total_5d = direct_df.head(5)['_flow'].sum()
+                except Exception as direct_e:
+                    print(f"Direct northbound history error: {direct_e}")
+
+            if total_5d != 0:
+                result['5日累计净流入'] = f"{total_5d:.2f}亿"
+
+        except Exception as e:
+            print(f"Historical northbound data failed: {e}")
 
     except Exception as e:
         print(f"Error fetching northbound flow: {e}")
+        import traceback
+        traceback.print_exc()
 
     return result if result else {"说明": "北向资金数据暂时无法获取"}
 

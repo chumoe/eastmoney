@@ -16,4 +16,5 @@ python-multipart
 argon2-cffi
 redis
 scipy
+fastapi
 httpx

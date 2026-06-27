@@ -53,7 +53,18 @@ def reset_all():
         'ths_index',      # THS sector index
         'fx_daily',       # Forex
         'moneyflow',      # Money flow (deprecated but might be in cache)
+        'moneyflow_hsgt', # Northbound flow (沪深港通)
+        'moneyflow_ind_ths', # Industry money flow
+        'moneyflow_cnt_ths', # Concept/sector money flow
         'index_daily',    # Market indices
+        'top_list',       # Dragon Tiger list
+        'main_flow',      # Main capital flow
+        'market_sentiment', # Market sentiment
+        'gold_macro',     # Gold macro
+        'abnormal',       # Abnormal movements
+        'system_stats',   # System stats
+        'watchlist',      # Watchlist
+        'news',           # News
     ]
 
     print("🔄 Resetting ALL circuit breakers...")
@@ -83,7 +94,18 @@ def show_status():
         'ths_index',
         'fx_daily',
         'moneyflow',
+        'moneyflow_hsgt',
+        'moneyflow_ind_ths',
+        'moneyflow_cnt_ths',
         'index_daily',
+        'top_list',
+        'main_flow',
+        'market_sentiment',
+        'gold_macro',
+        'abnormal',
+        'system_stats',
+        'watchlist',
+        'news',
     ]
 
     print("\n" + "=" * 80)

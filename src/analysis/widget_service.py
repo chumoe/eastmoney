@@ -5,6 +5,7 @@ Provides unified data fetching for all Dashboard widgets.
 Integrates with TuShare, AkShare, and yFinance with caching, rate limiting, and circuit breaker.
 """
 
+import math
 import time
 import threading
 from datetime import datetime, timedelta
@@ -113,13 +114,235 @@ class WidgetDataService:
         return 930 <= hm < 1500
 
     def _safe_float(self, value, default=0.0) -> float:
-        """Safely convert value to float, return default if None or invalid."""
+        """Safely convert value to float, return default if None, invalid, or NaN."""
         if value is None:
             return default
         try:
-            return float(value)
+            result = float(value)
+            if math.isnan(result):
+                return default
+            return result
         except (ValueError, TypeError):
             return default
+
+    def _get_northbound_from_ths(self, days: int = 5) -> Optional[Dict[str, Any]]:
+        """
+        从同花顺 (data.hexin.cn) 获取北向资金实时数据
+        只能获取当日的分钟级数据，历史数据需配合本地缓存
+        返回当日累计净流入作为最新值
+        """
+        try:
+            try:
+                import requests
+                use_requests = True
+            except ImportError:
+                import httpx
+                use_requests = False
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/117.0.0.0 Safari/537.36",
+                "Host": "data.hexin.cn",
+                "Referer": "https://data.hexin.cn/",
+            }
+
+            url = "https://data.hexin.cn/market/hsgtApi/method/dayChart/"
+
+            if use_requests:
+                resp = requests.get(url, headers=headers, timeout=10)
+            else:
+                resp = httpx.get(url, headers=headers, timeout=10)
+
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            times = data.get("time", [])
+            hgt_list = data.get("hgt", [])
+            sgt_list = data.get("sgt", [])
+
+            if not times or not hgt_list or not sgt_list:
+                return None
+
+            # 获取最后一个有效数据点（收盘数据）
+            n = len(times)
+            hgt_val = 0.0
+            sgt_val = 0.0
+
+            # 从后往前找第一个非零/非None的值
+            for i in range(min(n, len(hgt_list), len(sgt_list)) - 1, -1, -1):
+                try:
+                    h = float(hgt_list[i]) if hgt_list[i] is not None else 0.0
+                    s = float(sgt_list[i]) if sgt_list[i] is not None else 0.0
+                    if h != 0 or s != 0:
+                        hgt_val = round(h, 2)
+                        sgt_val = round(s, 2)
+                        break
+                except (ValueError, TypeError):
+                    continue
+
+            # 获取今天的日期
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            result = {
+                "latest": {
+                    "date": today,
+                    "north_money": round(hgt_val + sgt_val, 2),
+                    "hgt_net": hgt_val,
+                    "sgt_net": sgt_val,
+                },
+                "cumulative_5d": round(hgt_val + sgt_val, 2),
+                "history": [
+                    {
+                        "date": today,
+                        "north_money": round(hgt_val + sgt_val, 2),
+                    }
+                ],
+                "updated_at": datetime.now().isoformat(),
+                "source": "tonghuashun_realtime"
+            }
+            print(f"Tonghuashun realtime result: date={today}, hgt={hgt_val}, sgt={sgt_val}, total={hgt_val + sgt_val}")
+            return result
+
+        except ImportError:
+            print("Tonghuashun northbound API skipped: requests/httpx not available")
+        except Exception as e:
+            print(f"Tonghuashun northbound API error: {e}")
+
+        return None
+
+    def _get_northbound_from_eastmoney(self, days: int = 5) -> Optional[Dict[str, Any]]:
+        """
+        直接从东方财富 API 获取北向资金数据
+        优先使用 NET_DEAL_AMT（成交净买额），其次使用 FUND_INFLOW（资金流入）
+        """
+        try:
+            try:
+                import requests
+                use_requests = True
+            except ImportError:
+                import httpx
+                use_requests = False
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'http://data.eastmoney.com/',
+            }
+
+            url = "http://datacenter-web.eastmoney.com/api/data/v1/get"
+
+            # 尝试获取更多数据以找到有效值
+            fetch_days = max(days + 50, 100)
+            params = {
+                'sortColumns': 'TRADE_DATE',
+                'sortTypes': '-1',
+                'pageSize': str(fetch_days),
+                'pageNumber': '1',
+                'reportName': 'RPT_MUTUAL_DEAL_HISTORY',
+                'columns': 'ALL',
+                'source': 'WEB',
+                'client': 'WEB',
+                'filter': '(MUTUAL_TYPE="005")',
+            }
+
+            if use_requests:
+                resp = requests.get(url, params=params, headers=headers, timeout=10)
+            else:
+                resp = httpx.get(url, params=params, headers=headers, timeout=10)
+
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            if not data or not data.get('result') or not data['result'].get('data'):
+                return None
+
+            items = data['result']['data']
+
+            # 按优先级尝试不同的资金流字段
+            flow_fields = ['NET_DEAL_AMT', 'FUND_INFLOW']
+            best_field = None
+            best_items = []
+            best_date = ''
+
+            for field in flow_fields:
+                current_items = []
+                for item in items:
+                    val = item.get(field)
+                    if val is not None:
+                        try:
+                            float_val = float(val)
+                            # FUND_INFLOW 单位是万元，转换为亿元
+                            if field == 'FUND_INFLOW':
+                                float_val = float_val / 100.0
+                            current_items.append((item, float_val))
+                        except (ValueError, TypeError):
+                            continue
+                
+                if not current_items:
+                    continue
+                
+                current_date = str(current_items[0][0].get('TRADE_DATE', ''))[:10]
+                
+                # 第一优先级只要有数据就用
+                if field == flow_fields[0]:
+                    best_field = field
+                    best_items = current_items
+                    best_date = current_date
+                    break
+                
+                # 其他优先级，比较日期，使用更新的
+                if not best_items or current_date > best_date:
+                    best_field = field
+                    best_items = current_items
+                    best_date = current_date
+
+            used_field = best_field
+            valid_items = best_items
+
+            if not used_field or not valid_items:
+                return None
+
+            print(f"EastMoney datacenter 使用字段: {used_field}, 有效数据: {len(valid_items)} 条")
+
+            history = []
+            cumulative_5d = 0
+            latest = None
+
+            for i, (item, north_money) in enumerate(valid_items[:days]):
+                date_str = str(item.get('TRADE_DATE', ''))[:10]
+                north_money = round(north_money, 2)
+                history.append({
+                    "date": date_str,
+                    "north_money": north_money,
+                })
+
+                if i == 0:
+                    latest = history[0]
+                if i < days:
+                    cumulative_5d += north_money
+
+            if history and latest:
+                result = {
+                    "latest": {
+                        "date": latest["date"],
+                        "north_money": latest["north_money"],
+                        "hgt_net": 0.0,
+                        "sgt_net": 0.0,
+                    },
+                    "cumulative_5d": round(cumulative_5d, 2),
+                    "history": history,
+                    "updated_at": datetime.now().isoformat(),
+                    "source": "eastmoney_datacenter"
+                }
+                print(f"EastMoney datacenter result: {len(history)} days, latest={latest}")
+                return result
+
+        except ImportError:
+            print("EastMoney northbound API skipped: requests/httpx not available")
+        except Exception as e:
+            print(f"EastMoney northbound API error: {e}")
+
+        return None
 
     # =========================================================================
     # Widget Data Methods
@@ -129,8 +352,10 @@ class WidgetDataService:
         """
         Get northbound capital flow data (沪深港通资金流向).
 
-        Primary: TuShare moneyflow_hsgt
-        Fallback: AkShare
+        Data sources (in order of priority):
+        1. TuShare moneyflow_hsgt (if available and circuit breaker not open)
+        2. EastMoney Direct API (reliable and fast)
+        3. AkShare stock_hsgt_hist_em + stock_hsgt_fund_flow_summary_em (fallback)
 
         Returns:
             Dict with today's flow, 5-day cumulative, and historical data
@@ -185,59 +410,302 @@ class WidgetDataService:
                         self._set_cache(cache_key, result, config.ttl)
                         return result
 
-                    circuit_breaker.record_failure(config.api_name)
                 except Exception as e:
                     circuit_breaker.record_failure(config.api_name)
                     print(f"TuShare northbound flow error: {e}")
 
+        # ==========================================
+        # 数据源 1: 同花顺实时 API (最新、最可靠)
+        # ==========================================
+        # 注：同花顺只有当日数据，后面会和 AkShare 历史数据合并
+        ths_result = self._get_northbound_from_ths(days)
+
+        # ==========================================
+        # 数据源 2: 东方财富直接 API
+        # ==========================================
+        eastmoney_result = self._get_northbound_from_eastmoney(days)
+        # 只有当东方财富数据足够多（>=3天）时才直接使用
+        if eastmoney_result and eastmoney_result.get("history") and len(eastmoney_result["history"]) >= min(3, days):
+            # 如果有同花顺实时数据，用它来更新最新值
+            if ths_result and ths_result.get("latest") and ths_result["latest"].get("north_money") != 0:
+                ths_date = ths_result["latest"]["date"]
+                em_date = eastmoney_result["latest"]["date"]
+                if ths_date > em_date:
+                    # 把同花顺数据插入到最前面
+                    new_history = [{"date": ths_date, "north_money": ths_result["latest"]["north_money"]}]
+                    new_history.extend(eastmoney_result["history"][:days-1])
+                    eastmoney_result["latest"] = ths_result["latest"]
+                    eastmoney_result["history"] = new_history
+                    eastmoney_result["cumulative_5d"] = round(
+                        sum(item["north_money"] for item in new_history[:5]), 2
+                    )
+                    eastmoney_result["source"] = "eastmoney+tonghuashun"
+            self._set_cache(cache_key, eastmoney_result, config.ttl)
+            return eastmoney_result
+
         # Fallback: AkShare
+        ak_error = None
         try:
             import akshare as ak
+            import pandas as pd
 
-            end_date = datetime.now().strftime('%Y%m%d')
-            start_date = (datetime.now() - timedelta(days=days + 10)).strftime('%Y%m%d')
+            # ==========================================
+            # 1. 获取历史数据（北向资金）
+            # ==========================================
+            history = []
+            cumulative_5d = 0
+            hist_latest = None
 
-            df = ak.stock_hsgt_hist_em(symbol="北向资金")
-            if df is not None and not df.empty:
-                # Filter by date range
-                df = df.sort_values('日期', ascending=False)
-                df = df.head(days + 5)
+            def _extract_flow_data(df, date_col, flow_cols_priority):
+                """从 DataFrame 中提取资金流数据，返回 (日期, 资金流) 的有效数据"""
+                if df is None or df.empty:
+                    return None
 
-                result = {
-                    "latest": None,
-                    "cumulative_5d": 0,
-                    "history": [],
-                    "updated_at": datetime.now().isoformat(),
-                    "source": "akshare"
-                }
+                result_df = df.rename(columns={date_col: '日期'}).copy()
+                result_df['日期'] = pd.to_datetime(result_df['日期'], errors='coerce').dt.date
 
-                if not df.empty:
-                    latest = df.iloc[0]
-                    result["latest"] = {
-                        "date": str(latest.get('日期', '')),
-                        "north_money": round(self._safe_float(latest.get('当日净流入')), 2),
-                        "hgt_net": round(self._safe_float(latest.get('沪股通净流入')), 2),
-                        "sgt_net": round(self._safe_float(latest.get('深股通净流入')), 2),
+                candidates = []
+
+                # 收集所有有足够有效数据的列
+                for flow_col in flow_cols_priority:
+                    if flow_col not in result_df.columns:
+                        continue
+                    try:
+                        flow_vals = pd.to_numeric(result_df[flow_col], errors='coerce')
+                        valid_count = flow_vals.notna().sum()
+                        if valid_count < 10:
+                            continue
+
+                        valid_mask = flow_vals.notna()
+                        last_valid_date = result_df.loc[valid_mask, '日期'].max()
+
+                        temp_df = result_df.copy()
+                        temp_df['_flow'] = flow_vals
+                        valid_df = temp_df[temp_df['_flow'].notna()].copy()
+                        valid_df = valid_df.sort_values('日期', ascending=False).reset_index(drop=True)
+
+                        candidates.append({
+                            'col': flow_col,
+                            'df': valid_df,
+                            'last_date': last_valid_date,
+                            'priority': flow_cols_priority.index(flow_col),
+                        })
+                    except Exception:
+                        continue
+
+                if not candidates:
+                    return None
+
+                # 按优先级排序（优先级索引越小越优先）
+                candidates.sort(key=lambda x: x['priority'])
+
+                # 如果第一优先级的最新数据在60天内，直接用
+                first_candidate = candidates[0]
+                days_old = (datetime.now().date() - first_candidate['last_date']).days
+                if days_old <= 60:
+                    print(f"  使用列 '{first_candidate['col']}': {len(first_candidate['df'])} 条有效数据, 最新日期={first_candidate['last_date']}")
+                    return first_candidate['df'][['日期', '_flow']]
+
+                # 否则，找最新数据的列
+                candidates.sort(key=lambda x: x['last_date'], reverse=True)
+                best = candidates[0]
+                print(f"  第一优先级数据过旧({days_old}天), 使用更新的列 '{best['col']}': {len(best['df'])} 条有效数据, 最新日期={best['last_date']}")
+                return best['df'][['日期', '_flow']]
+
+            flow_cols_priority = ['当日成交净买额', '当日资金流入', '成交净买额', '当日净流入', '净买额', '净流入', '资金流入']
+
+            # 尝试分别获取沪股通和深股通的历史数据
+            combined_df = None
+            hgt_valid = None
+            sgt_valid = None
+
+            for symbol in ["沪股通", "深股通"]:
+                try:
+                    df = ak.stock_hsgt_hist_em(symbol=symbol)
+                    date_col = '日期' if '日期' in df.columns else df.columns[0]
+                    extracted = _extract_flow_data(df, date_col, flow_cols_priority)
+                    if extracted is not None and not extracted.empty:
+                        if symbol == "沪股通":
+                            hgt_valid = extracted.rename(columns={'_flow': 'hgt_flow'})
+                        else:
+                            sgt_valid = extracted.rename(columns={'_flow': 'sgt_flow'})
+                except Exception as e:
+                    print(f"AkShare {symbol} history error: {e}")
+
+            # 合并沪股通和深股通数据得到北向资金
+            if hgt_valid is not None and sgt_valid is not None:
+                # 使用外连接，保留两边所有日期，缺失的填充为0
+                merged = pd.merge(hgt_valid, sgt_valid, on='日期', how='outer')
+                merged['hgt_flow'] = merged['hgt_flow'].fillna(0)
+                merged['sgt_flow'] = merged['sgt_flow'].fillna(0)
+                merged['north_money'] = merged['hgt_flow'] + merged['sgt_flow']
+                merged = merged.sort_values('日期', ascending=False).reset_index(drop=True)
+                combined_df = merged
+                print(f"AkShare 沪股通+深股通合并: {len(combined_df)} 条有效数据, 最新日期={combined_df.iloc[0]['日期'] if len(combined_df) > 0 else 'N/A'}")
+
+            # 如果分别获取失败，尝试直接用"北向资金"作为 symbol
+            if combined_df is None or combined_df.empty:
+                try:
+                    direct_df = ak.stock_hsgt_hist_em(symbol="北向资金")
+                    if direct_df is not None and not direct_df.empty:
+                        date_col = '日期' if '日期' in direct_df.columns else direct_df.columns[0]
+                        extracted = _extract_flow_data(direct_df, date_col, flow_cols_priority)
+                        if extracted is not None and not extracted.empty:
+                            extracted = extracted.rename(columns={'_flow': 'north_money'})
+                            extracted['hgt_flow'] = 0.0
+                            extracted['sgt_flow'] = 0.0
+                            combined_df = extracted
+                            print(f"AkShare 直接获取北向资金: {len(combined_df)} 条有效数据")
+                except Exception as direct_e:
+                    print(f"AkShare direct northbound history error: {direct_e}")
+
+            # 从合并后的历史数据中提取结果
+            if combined_df is not None and not combined_df.empty:
+                valid = combined_df[combined_df['north_money'].notna()]
+                if not valid.empty:
+                    recent = valid.head(days)
+                    cumulative_5d = round(self._safe_float(recent['north_money'].sum()), 2)
+
+                    for _, row in recent.iterrows():
+                        history.append({
+                            "date": str(row['日期']),
+                            "north_money": round(self._safe_float(row['north_money']), 2),
+                        })
+
+                    latest_row = valid.iloc[0]
+                    hist_latest = {
+                        "date": str(latest_row['日期']),
+                        "north_money": round(self._safe_float(latest_row['north_money']), 2),
+                        "hgt_net": round(self._safe_float(latest_row.get('hgt_flow', 0)), 2),
+                        "sgt_net": round(self._safe_float(latest_row.get('sgt_flow', 0)), 2),
                     }
 
-                recent_5 = df.head(5)
-                result["cumulative_5d"] = round(
-                    self._safe_float(recent_5['当日净流入'].fillna(0).sum()), 2
-                )
+            # ==========================================
+            # 2. 获取实时汇总数据（只有当实时数据有效且比历史数据新时才更新）
+            # ==========================================
+            try:
+                df = ak.stock_hsgt_fund_flow_summary_em()
+                if df is not None and not df.empty:
+                    # 筛选北向资金
+                    north = None
+                    if '资金方向' in df.columns:
+                        north = df[df['资金方向'] == '北向']
+                    elif '方向' in df.columns:
+                        north = df[df['方向'] == '北向']
 
-                for _, row in df.head(days).iterrows():
-                    result["history"].append({
-                        "date": str(row.get('日期', '')),
-                        "north_money": round(self._safe_float(row.get('当日净流入')), 2),
-                    })
+                    if north is not None and not north.empty:
+                        # 找出成交净买额列
+                        net_col = None
+                        for col in ['成交净买额', '净买额', '净流入', '当日净流入', '资金净流入']:
+                            if col in north.columns:
+                                net_col = col
+                                break
 
+                        if net_col:
+                            # 计算北向合计 = 沪股通 + 深股通
+                            hgt_net_val = 0
+                            sgt_net_val = 0
+
+                            if '板块' in north.columns:
+                                hgt_rows = north[north['板块'].str.contains('沪股通', na=False)]
+                                sgt_rows = north[north['板块'].str.contains('深股通', na=False)]
+                                if not hgt_rows.empty:
+                                    hgt_net_val = self._safe_float(hgt_rows.iloc[0].get(net_col))
+                                if not sgt_rows.empty:
+                                    sgt_net_val = self._safe_float(sgt_rows.iloc[0].get(net_col))
+
+                            total_net = hgt_net_val + sgt_net_val
+
+                            # 如果没找到分项，尝试直接求和
+                            if total_net == 0:
+                                for _, row in north.iterrows():
+                                    total_net += self._safe_float(row.get(net_col))
+
+                            # 获取交易日
+                            trade_date = ''
+                            for date_col in ['交易日', '日期', 'trade_date']:
+                                if date_col in north.columns:
+                                    val = north.iloc[0].get(date_col)
+                                    if val is not None and str(val).strip():
+                                        trade_date = str(val)
+                                        break
+
+                            # 只有当实时数据不为 0 且比历史数据新时才更新
+                            # 注：2024年8月后北向资金净买额数据停止披露，实时数据通常为0，不应覆盖历史有效数据
+                            if total_net != 0 and trade_date:
+                                # 检查是否比历史数据新
+                                should_update = True
+                                if hist_latest and hist_latest.get('date'):
+                                    try:
+                                        hist_date = datetime.strptime(hist_latest['date'], '%Y-%m-%d').date()
+                                        rt_date = datetime.strptime(trade_date, '%Y-%m-%d').date()
+                                        if rt_date <= hist_date:
+                                            should_update = False
+                                    except ValueError:
+                                        pass
+                                if should_update:
+                                    hist_latest = {
+                                        "date": trade_date,
+                                        "north_money": round(total_net, 2),
+                                        "hgt_net": round(hgt_net_val, 2),
+                                        "sgt_net": round(sgt_net_val, 2),
+                                    }
+                                    print(f"AkShare 实时数据更新: date={trade_date}, net={total_net:.2f}亿")
+            except Exception as summary_e:
+                print(f"AkShare northbound summary error: {summary_e}")
+
+            result = {
+                "latest": hist_latest,
+                "cumulative_5d": cumulative_5d,
+                "history": history,
+                "updated_at": datetime.now().isoformat(),
+                "source": "akshare"
+            }
+
+            # 如果有同花顺实时数据，用它来更新最新值
+            if ths_result and ths_result.get("latest") and ths_result["latest"].get("north_money") != 0:
+                ths_date = ths_result["latest"]["date"]
+                ths_north = ths_result["latest"]["north_money"]
+                ths_hgt = ths_result["latest"]["hgt_net"]
+                ths_sgt = ths_result["latest"]["sgt_net"]
+
+                should_update = True
+                if hist_latest and hist_latest.get('date'):
+                    try:
+                        hist_date = datetime.strptime(hist_latest['date'], '%Y-%m-%d').date()
+                        rt_date = datetime.strptime(ths_date, '%Y-%m-%d').date()
+                        if rt_date <= hist_date:
+                            should_update = False
+                    except ValueError:
+                        pass
+
+                if should_update:
+                    # 更新 latest
+                    result["latest"] = ths_result["latest"]
+                    # 更新 history（插入到最前面）
+                    new_history = [{"date": ths_date, "north_money": ths_north}]
+                    new_history.extend(history[:days-1])
+                    result["history"] = new_history
+                    # 更新 cumulative_5d
+                    result["cumulative_5d"] = round(
+                        sum(item["north_money"] for item in new_history[:5]), 2
+                    )
+                    result["source"] = "akshare+tonghuashun"
+                    print(f"同花顺实时数据更新: date={ths_date}, net={ths_north:.2f}亿")
+
+            if hist_latest is not None or history:
                 self._set_cache(cache_key, result, config.ttl)
                 return result
 
         except Exception as e:
+            ak_error = str(e)
             print(f"AkShare northbound flow error: {e}")
 
-        return {"error": "Service temporarily unavailable", "latest": None, "cumulative_5d": 0, "history": []}
+        # Both TuShare and AkShare failed — return error with details
+        cb_status = "开启" if circuit_breaker.is_open(config.api_name) else "关闭"
+        error_msg = f"TuShare(moneyflow_hsgt) 熔断器={cb_status}, AkShare: {ak_error or '返回空数据'}"
+        print(f"Northbound flow: {error_msg}")
+        return {"error": error_msg, "latest": None, "cumulative_5d": 0, "history": []}
 
 
     def get_industry_flow(self, limit: int = 10) -> Dict[str, Any]:

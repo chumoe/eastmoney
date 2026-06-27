@@ -98,6 +98,11 @@ def tushare_call_with_retry(
                 print(f"TuShare authentication error: {error_msg}")
                 return None
 
+            # Check for permission error (API not available for this token level)
+            if "访问权限" in error_msg or "没有接口" in error_msg:
+                print(f"TuShare permission denied for {api_method}: {error_msg}")
+                return None
+
             # Other errors
             if attempt < max_retries - 1:
                 wait_time = backoff_factor ** attempt
