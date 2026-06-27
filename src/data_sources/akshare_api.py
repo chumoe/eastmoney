@@ -11,6 +11,11 @@ _A_STOCK_SPOT_CACHE_LOCK = threading.Lock()
 _A_STOCK_SPOT_CACHE_FETCHED_AT: float = 0.0
 _A_STOCK_SPOT_CACHE_BY_CODE: Optional[Dict[str, Dict]] = None
 
+_FUND_LIST_CACHE_LOCK = threading.Lock()
+_FUND_LIST_CACHE_FETCHED_AT: float = 0.0
+_FUND_LIST_CACHE: Optional[List[Dict]] = None
+_FUND_LIST_CACHE_TTL: int = 3600
+
 
 def _normalize_a_stock_code(stock_code: str) -> str:
     if not stock_code:
@@ -987,16 +992,28 @@ def get_market_indices():
         print(f"Error fetching market indices: {e}")
         return {}
 
-def get_all_fund_list() -> List[Dict]:
+def get_all_fund_list(force_refresh: bool = False) -> List[Dict]:
 
     """
 
-    获取全市场所有基金列表
+    获取全市场所有基金列表（带内存缓存，TTL=1小时）
 
     Returns: List of dicts with 'code', 'name', 'type', etc.
 
     """
+    global _FUND_LIST_CACHE, _FUND_LIST_CACHE_FETCHED_AT
 
+    now = time.time()
+    with _FUND_LIST_CACHE_LOCK:
+        # 缓存有效且未过期，直接返回
+        if (
+            not force_refresh
+            and _FUND_LIST_CACHE is not None
+            and (now - _FUND_LIST_CACHE_FETCHED_AT) < _FUND_LIST_CACHE_TTL
+        ):
+            return _FUND_LIST_CACHE
+
+    # 缓存失效，重新获取
     try:
 
         # fund_name_em returns: 基金代码, 基金简称, 基金类型, 拼音缩写
@@ -1021,11 +1038,23 @@ def get_all_fund_list() -> List[Dict]:
 
             })
 
-            return df[['code', 'name', 'type', 'pinyin']].to_dict('records')
+            result = df[['code', 'name', 'type', 'pinyin']].to_dict('records')
+
+            # 更新缓存
+            with _FUND_LIST_CACHE_LOCK:
+                _FUND_LIST_CACHE = result
+                _FUND_LIST_CACHE_FETCHED_AT = now
+
+            return result
 
     except Exception as e:
 
         print(f"Error fetching all fund list: {e}")
+
+        # 缓存失败时，如果有旧缓存则返回旧缓存
+        with _FUND_LIST_CACHE_LOCK:
+            if _FUND_LIST_CACHE is not None:
+                return _FUND_LIST_CACHE
 
     return []
 
