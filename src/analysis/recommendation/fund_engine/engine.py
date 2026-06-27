@@ -142,9 +142,12 @@ class FundRecommendationEngine:
         print(f"[FundEngine] Cache query took {time.time() - cache_start:.2f}s, found {len(cached_factors) if cached_factors else 0} funds")
 
         # IMPORTANT: Do NOT compute on-demand - factors should be pre-computed by scheduled task
-        # If cache is empty, return empty list instead of blocking with real-time computation
+        # If cache is empty, try fallback data source
         if not cached_factors:
-            print(f"[FundEngine] WARNING: No cached fund factors for {trade_date_db}. Please run factor computation task first.")
+            print(f"[FundEngine] WARNING: No cached fund factors for {trade_date_db}. Using fallback data source.")
+            fallback_recs = self._get_fallback_recommendations(strategy, top_n, min_score)
+            if fallback_recs:
+                return fallback_recs
             return []
 
         recommendations = []
@@ -338,6 +341,150 @@ class FundRecommendationEngine:
 
         conn.close()
         return {'name': code, 'type': ''}  # Use code as name if not found
+
+    def _get_fallback_recommendations(
+        self,
+        strategy: str = 'short_term',
+        top_n: int = 20,
+        min_score: float = 55
+    ) -> List[Dict]:
+        """
+        Fallback recommendation generator using AkShare fund ranking data when factor cache is empty.
+
+        Uses fund performance rankings to generate basic recommendations.
+        """
+        try:
+            import akshare as ak
+            import pandas as pd
+            from datetime import datetime
+
+            print(f"[FundEngine] Generating fallback recommendations using AkShare...")
+
+            try:
+                if strategy == 'short_term':
+                    rank_df = ak.fund_open_fund_rank_em(symbol="全部", period="近一月")
+                else:
+                    rank_df = ak.fund_open_fund_rank_em(symbol="全部", period="近一年")
+            except Exception:
+                try:
+                    rank_df = ak.fund_open_fund_rank_em(symbol="股票型", period="近一月")
+                except Exception as e:
+                    print(f"[FundEngine] Fallback: Failed to fetch fund ranking: {e}")
+                    return []
+
+            if rank_df is None or rank_df.empty:
+                print("[FundEngine] Fallback: No fund ranking data")
+                return []
+
+            recommendations = []
+            count = 0
+
+            for _, row in rank_df.iterrows():
+                if count >= top_n * 2:
+                    break
+
+                try:
+                    code = str(row.get('基金代码', ''))
+                    name = str(row.get('基金简称', ''))
+
+                    if not code or len(code) != 6:
+                        continue
+
+                    return_1m = row.get('近1月', 0)
+                    return_3m = row.get('近3月', 0)
+                    return_6m = row.get('近6月', 0)
+                    return_1y = row.get('近1年', 0)
+                    nav = row.get('单位净值', 0)
+                    fund_type = row.get('基金类型', '')
+
+                    return_1m = float(return_1m) if pd.notna(return_1m) else 0.0
+                    return_3m = float(return_3m) if pd.notna(return_3m) else 0.0
+                    return_6m = float(return_6m) if pd.notna(return_6m) else 0.0
+                    return_1y = float(return_1y) if pd.notna(return_1y) else 0.0
+
+                    score = 50.0
+                    reasons = []
+
+                    if strategy == 'short_term':
+                        if return_1m > 5:
+                            score += 20
+                            reasons.append("近1月收益优秀")
+                        elif return_1m > 3:
+                            score += 15
+                            reasons.append("近1月收益良好")
+                        elif return_1m > 0:
+                            score += 8
+                            reasons.append("近1月正收益")
+                        else:
+                            score -= 5
+                            reasons.append("近1月收益为负")
+
+                        if return_3m > 10:
+                            score += 10
+                            reasons.append("近3月趋势向好")
+                        elif return_3m > 5:
+                            score += 5
+                    else:
+                        if return_1y > 30:
+                            score += 25
+                            reasons.append("近1年收益优秀")
+                        elif return_1y > 15:
+                            score += 18
+                            reasons.append("近1年收益良好")
+                        elif return_1y > 5:
+                            score += 10
+                            reasons.append("近1年正收益")
+                        else:
+                            score -= 5
+
+                        if return_6m > 15:
+                            score += 8
+                            reasons.append("近6月表现稳定")
+
+                    if return_1m > 0 and return_3m > 0:
+                        score += 5
+                        reasons.append("短期中期均为正收益")
+
+                    score = max(0, min(100, score))
+
+                    if score < min_score:
+                        continue
+
+                    rec = {
+                        'code': code,
+                        'name': name,
+                        'type': fund_type,
+                        'score': round(score, 1),
+                        'trade_date': datetime.now().strftime('%Y-%m-%d'),
+                        'recommendation': '关注' if score >= 70 else '观望',
+                        'time_horizon': '1-3个月' if strategy == 'short_term' else '6-12个月',
+                        'risk_level': '中等',
+                        'key_reasons': reasons[:3],
+                        'factors': {
+                            'return_1m': return_1m,
+                            'return_3m': return_3m,
+                            'return_6m': return_6m,
+                            'return_1y': return_1y,
+                            'nav': float(nav) if pd.notna(nav) else None,
+                        },
+                        'is_fallback': True,
+                    }
+                    recommendations.append(rec)
+                    count += 1
+
+                except Exception as e:
+                    print(f"[FundEngine] Fallback: Error processing fund row: {e}")
+                    continue
+
+            recommendations.sort(key=lambda x: x['score'], reverse=True)
+            print(f"[FundEngine] Fallback: Generated {len(recommendations)} recommendations")
+            return recommendations[:top_n]
+
+        except Exception as e:
+            print(f"[FundEngine] Fallback recommendations failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
 
 # Convenience functions

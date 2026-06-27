@@ -1,9 +1,11 @@
 """
 Basic Technical Analysis Module
-基础技术分析模块 - MA均线、成交量、支撑压力位
+基础技术分析模块 - MA均线、成交量、支撑压力位、MACD、KDJ、RSI、布林带
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+import pandas as pd
+import numpy as np
 from src.data_sources.akshare_api import get_stock_history
 
 
@@ -307,3 +309,195 @@ def format_technical_analysis(analysis: Dict) -> str:
         output.append(f"\n**价格位置:** {pos.get('position_desc')} (60日区间内 {pos.get('position_pct')}%)")
 
     return "\n".join(output)
+
+
+# ============================================================================
+# 技术指标计算模块 - MACD, KDJ, RSI, BOLL
+# ============================================================================
+
+def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
+    """
+    计算RSI（相对强弱指标）
+
+    Args:
+        prices: 收盘价序列
+        period: RSI周期，默认14
+
+    Returns:
+        RSI值序列
+    """
+    delta = prices.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+
+    return rsi
+
+
+def calculate_macd(
+    prices: pd.Series,
+    fast_period: int = 12,
+    slow_period: int = 26,
+    signal_period: int = 9
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    计算MACD（指数平滑异同移动平均线）
+
+    Args:
+        prices: 收盘价序列
+        fast_period: 快速EMA周期，默认12
+        slow_period: 慢速EMA周期，默认26
+        signal_period: 信号线周期，默认9
+
+    Returns:
+        (DIF, DEA, MACD) 元组
+    """
+    ema_fast = prices.ewm(span=fast_period, adjust=False).mean()
+    ema_slow = prices.ewm(span=slow_period, adjust=False).mean()
+
+    dif = ema_fast - ema_slow
+    dea = dif.ewm(span=signal_period, adjust=False).mean()
+    macd = (dif - dea) * 2
+
+    return dif, dea, macd
+
+
+def calculate_kdj(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    n: int = 9,
+    m1: int = 3,
+    m2: int = 3
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    计算KDJ（随机指标）
+
+    Args:
+        high: 最高价序列
+        low: 最低价序列
+        close: 收盘价序列
+        n: RSV周期，默认9
+        m1: K值平滑周期，默认3
+        m2: D值平滑周期，默认3
+
+    Returns:
+        (K, D, J) 元组
+    """
+    lowest_low = low.rolling(window=n, min_periods=1).min()
+    highest_high = high.rolling(window=n, min_periods=1).max()
+
+    rsv = (close - lowest_low) / (highest_high - lowest_low) * 100
+    rsv = rsv.fillna(50)
+
+    k = rsv.ewm(com=m1 - 1, adjust=False).mean()
+    d = k.ewm(com=m2 - 1, adjust=False).mean()
+    j = 3 * k - 2 * d
+
+    return k, d, j
+
+
+def calculate_bollinger_bands(
+    prices: pd.Series,
+    period: int = 20,
+    num_std: float = 2.0
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    计算布林带（BOLL）
+
+    Args:
+        prices: 收盘价序列
+        period: 中轨周期，默认20
+        num_std: 标准差倍数，默认2
+
+    Returns:
+        (upper, mid, lower) 元组
+    """
+    mid = prices.rolling(window=period).mean()
+    std = prices.rolling(window=period).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+
+    return upper, mid, lower
+
+
+def compute_technical_factors_from_history(
+    code: str,
+    days: int = 60
+) -> Optional[pd.DataFrame]:
+    """
+    从历史K线数据计算技术指标（MACD, KDJ, RSI, BOLL）
+    作为TuShare stk_factor API的备用方案
+
+    Args:
+        code: 股票代码
+        days: 获取的交易日天数，默认60
+
+    Returns:
+        DataFrame，格式与TuShare stk_factor一致：
+        ts_code, trade_date, close, macd_dif, macd_dea, macd,
+        kdj_k, kdj_d, kdj_j, rsi_6, rsi_12, rsi_24, boll_upper, boll_mid, boll_lower
+    """
+    try:
+        import akshare as ak
+        from datetime import datetime, timedelta
+
+        end_date = datetime.now().strftime('%Y%m%d')
+        start_date = (datetime.now() - timedelta(days=days + 50)).strftime('%Y%m%d')
+
+        df = ak.stock_zh_a_hist(
+            symbol=code,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq"
+        )
+
+        if df is None or df.empty or len(df) < 30:
+            return None
+
+        df = df.sort_values('日期').reset_index(drop=True)
+
+        close = pd.to_numeric(df['收盘'], errors='coerce')
+        high = pd.to_numeric(df['最高'], errors='coerce')
+        low = pd.to_numeric(df['最低'], errors='coerce')
+
+        dif, dea, macd = calculate_macd(close)
+        k, d, j = calculate_kdj(high, low, close)
+        rsi_6 = calculate_rsi(close, 6)
+        rsi_12 = calculate_rsi(close, 12)
+        rsi_24 = calculate_rsi(close, 24)
+        boll_upper, boll_mid, boll_lower = calculate_bollinger_bands(close)
+
+        result = pd.DataFrame({
+            'ts_code': code,
+            'trade_date': df['日期'].astype(str).str.replace('-', ''),
+            'close': close,
+            'macd_dif': dif,
+            'macd_dea': dea,
+            'macd': macd,
+            'kdj_k': k,
+            'kdj_d': d,
+            'kdj_j': j,
+            'rsi_6': rsi_6,
+            'rsi_12': rsi_12,
+            'rsi_24': rsi_24,
+            'boll_upper': boll_upper,
+            'boll_mid': boll_mid,
+            'boll_lower': boll_lower,
+        })
+
+        result = result.sort_values('trade_date', ascending=False).head(days).reset_index(drop=True)
+
+        return result
+
+    except Exception as e:
+        print(f"Error computing technical factors from history for {code}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None

@@ -1449,6 +1449,7 @@ from src.data_sources.tushare_client import (
     normalize_ts_code,
     search_funds_tushare
 )
+from src.data_sources.technical_analysis import compute_technical_factors_from_history
 
 # In-memory cache for stock professional features
 _stock_feature_cache: Dict[str, Dict[str, Any]] = {}
@@ -1827,6 +1828,12 @@ async def get_stock_quant(code: str, current_user: User = Depends(get_current_us
         chip_task = loop.run_in_executor(None, lambda: get_chip_performance(code))
 
         factors_df, chip_df = await asyncio.gather(factors_task, chip_task)
+
+        if factors_df is None or factors_df.empty:
+            try:
+                factors_df = compute_technical_factors_from_history(code, 60)
+            except Exception as e:
+                print(f"Fallback technical factors also failed for {code}: {e}")
 
         signals = {
             "macd": {"signal": "neutral", "value": None},

@@ -8,6 +8,76 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 
+# Chinese A-share public holidays 2025-2026 (approximate, update as needed)
+# Format: set of "YYYYMMDD" strings
+_CHINA_HOLIDAYS = {
+    # 2025
+    "20250101", "20250128", "20250129", "20250130", "20250131",
+    "20250203", "20250204", "20250404", "20250405", "20250501",
+    "20250502", "20250505", "20250602", "20251001", "20251002",
+    "20251003", "20251006", "20251007", "20251008",
+    # 2026
+    "20260101", "20260102", "20260216", "20260217", "20260218",
+    "20260219", "20260220", "20260406", "20260501", "20260504",
+    "20260619", "20261001", "20261002", "20261005", "20261006",
+    "20261007",
+}
+
+
+def is_trading_day(date_str: str) -> bool:
+    """
+    Check if a date is a trading day (weekday, not a public holiday).
+
+    Args:
+        date_str: Date in YYYYMMDD format
+
+    Returns:
+        True if trading day, False otherwise
+    """
+    try:
+        dt = datetime.strptime(str(date_str), '%Y%m%d')
+    except ValueError:
+        return False
+
+    # Weekend check
+    if dt.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+
+    # Holiday check
+    date_key = dt.strftime('%Y%m%d')
+    if date_key in _CHINA_HOLIDAYS:
+        return False
+
+    return True
+
+
+def get_latest_trade_date_local(max_days_back: int = 30, offset: int = 0) -> Optional[str]:
+    """
+    Get the most recent trading day using local calendar (no API dependency).
+
+    Args:
+        max_days_back: Maximum days to look back
+        offset: Number of trading days to offset from the latest (0 = latest)
+
+    Returns:
+        Trade date in YYYYMMDD format, or None if not found
+    """
+    today = datetime.now()
+    trading_days = []
+
+    for i in range(max_days_back + 10):
+        check_date = today - timedelta(days=i)
+        date_str = check_date.strftime('%Y%m%d')
+        if is_trading_day(date_str):
+            trading_days.append(date_str)
+            if len(trading_days) > offset + 5:
+                break
+
+    if len(trading_days) > offset:
+        return trading_days[offset]
+    return None
+
+
 def normalize_stock_code(stock_code: str) -> str:
     """
     Extract and normalize a 6-digit A-share stock code from various input formats.

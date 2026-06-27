@@ -147,7 +147,10 @@ class StockRecommendationEngine:
         print(f"[StockEngine] Cache query took {time.time() - cache_start:.2f}s, found {len(cached_factors) if cached_factors else 0} stocks")
 
         if not cached_factors:
-            print(f"[StockEngine] WARNING: No cached stock factors for {trade_date_db}. Please run factor computation task first.")
+            print(f"[StockEngine] WARNING: No cached stock factors for {trade_date_db}. Using fallback data source.")
+            fallback_recs = self._get_fallback_recommendations(strategy, top_n, min_score)
+            if fallback_recs:
+                return fallback_recs
             return []
 
         recommendations = []
@@ -282,6 +285,185 @@ class StockRecommendationEngine:
         if result:
             return {'name': result[0], 'industry': result[1]}
         return {'name': '', 'industry': ''}
+
+    def _get_fallback_recommendations(
+        self,
+        strategy: str = 'short_term',
+        top_n: int = 20,
+        min_score: float = 60
+    ) -> List[Dict]:
+        """
+        Fallback recommendation generator using AkShare hot stocks when factor cache is empty.
+
+        Uses hot stock lists and simple technical indicators to generate basic recommendations.
+        """
+        try:
+            from src.data_sources.akshare_api import get_hot_stocks, get_limit_up_pool
+            from src.data_sources.technical_analysis import (
+                calculate_rsi,
+                calculate_macd,
+                calculate_bollinger_bands
+            )
+            import akshare as ak
+            import pandas as pd
+            from datetime import datetime, timedelta
+
+            print(f"[StockEngine] Generating fallback recommendations using AkShare...")
+
+            hot_stocks = get_hot_stocks(limit=top_n * 2)
+            if not hot_stocks:
+                print("[StockEngine] Fallback: No hot stocks available either")
+                return []
+
+            recommendations = []
+            end_date = datetime.now().strftime('%Y%m%d')
+            start_date = (datetime.now() - timedelta(days=60)).strftime('%Y%m%d')
+
+            for stock in hot_stocks:
+                code = stock.get('code', '')
+                name = stock.get('name', '')
+                change_pct = stock.get('change_pct', 0)
+
+                if not code or len(code) != 6:
+                    continue
+
+                try:
+                    hist_df = ak.stock_zh_a_hist(
+                        symbol=code,
+                        period="daily",
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust="qfq"
+                    )
+
+                    if hist_df is None or hist_df.empty or len(hist_df) < 20:
+                        continue
+
+                    hist_df = hist_df.sort_values('日期').reset_index(drop=True)
+                    close = pd.to_numeric(hist_df['收盘'], errors='coerce')
+                    high = pd.to_numeric(hist_df['最高'], errors='coerce')
+                    low = pd.to_numeric(hist_df['最低'], errors='coerce')
+                    volume = pd.to_numeric(hist_df['成交量'], errors='coerce')
+
+                    latest_close = float(close.iloc[-1])
+                    latest_volume = float(volume.iloc[-1])
+                    avg_volume_20 = float(volume.tail(20).mean())
+
+                    rsi_14 = calculate_rsi(close, 14)
+                    dif, dea, macd = calculate_macd(close)
+                    boll_upper, boll_mid, boll_lower = calculate_bollinger_bands(close)
+
+                    latest_rsi = float(rsi_14.iloc[-1]) if pd.notna(rsi_14.iloc[-1]) else 50
+                    latest_dif = float(dif.iloc[-1]) if pd.notna(dif.iloc[-1]) else 0
+                    latest_dea = float(dea.iloc[-1]) if pd.notna(dea.iloc[-1]) else 0
+                    latest_macd = float(macd.iloc[-1]) if pd.notna(macd.iloc[-1]) else 0
+                    latest_boll_upper = float(boll_upper.iloc[-1]) if pd.notna(boll_upper.iloc[-1]) else latest_close * 1.1
+                    latest_boll_lower = float(boll_lower.iloc[-1]) if pd.notna(boll_lower.iloc[-1]) else latest_close * 0.9
+                    latest_boll_mid = float(boll_mid.iloc[-1]) if pd.notna(boll_mid.iloc[-1]) else latest_close
+
+                    score = 50.0
+                    reasons = []
+
+                    if 40 <= latest_rsi <= 60:
+                        score += 10
+                        reasons.append("RSI处于中性区间")
+                    elif 30 <= latest_rsi < 40:
+                        score += 15
+                        reasons.append("RSI接近超卖区域，存在反弹可能")
+                    elif latest_rsi < 30:
+                        score += 5
+                        reasons.append("RSI超卖，短期可能反弹")
+                    elif 60 < latest_rsi <= 70:
+                        score += 5
+                        reasons.append("RSI偏强，趋势向好")
+                    else:
+                        score -= 5
+                        reasons.append("RSI超买，注意回调风险")
+
+                    if latest_dif > latest_dea:
+                        score += 10
+                        reasons.append("MACD金叉，多头信号")
+                    elif latest_macd > 0:
+                        score += 5
+                        reasons.append("MACD位于零轴上方")
+                    else:
+                        score -= 5
+                        reasons.append("MACD死叉，空头信号")
+
+                    vol_ratio = latest_volume / avg_volume_20 if avg_volume_20 > 0 else 1
+                    if vol_ratio > 1.5:
+                        score += 8
+                        reasons.append("成交量明显放大，资金关注")
+                    elif vol_ratio > 1.2:
+                        score += 4
+                        reasons.append("成交量温和放大")
+                    elif vol_ratio < 0.7:
+                        score -= 3
+                        reasons.append("成交量萎缩，关注度低")
+
+                    boll_position = (latest_close - latest_boll_lower) / (latest_boll_upper - latest_boll_lower) * 100 if latest_boll_upper > latest_boll_lower else 50
+                    if 40 <= boll_position <= 60:
+                        score += 5
+                        reasons.append("价格位于布林带中轨附近，震荡整理")
+                    elif boll_position > 80:
+                        score -= 3
+                        reasons.append("价格接近布林带上轨，注意压力")
+                    elif boll_position < 20:
+                        score += 8
+                        reasons.append("价格接近布林带下轨，支撑较强")
+
+                    if strategy == 'short_term':
+                        if change_pct > 0:
+                            score += min(change_pct * 2, 10)
+                        if vol_ratio > 1.3:
+                            score += 5
+                    else:
+                        if -5 < change_pct < 5:
+                            score += 5
+                            reasons.append("近期走势平稳")
+
+                    score = max(0, min(100, score))
+
+                    if score < min_score:
+                        continue
+
+                    rec = {
+                        'code': code,
+                        'name': name,
+                        'industry': stock.get('industry', ''),
+                        'score': round(score, 1),
+                        'trade_date': datetime.now().strftime('%Y-%m-%d'),
+                        'recommendation': '关注' if score >= 70 else '观望',
+                        'time_horizon': '7-15天' if strategy == 'short_term' else '3-6个月',
+                        'risk_level': '中等',
+                        'key_reasons': reasons[:3],
+                        'factors': {
+                            'rsi': round(latest_rsi, 2),
+                            'macd': round(latest_macd, 4),
+                            'boll_position': round(boll_position, 1),
+                            'volume_ratio': round(vol_ratio, 2),
+                            'change_pct': change_pct,
+                        },
+                        'is_fallback': True,
+                    }
+                    recommendations.append(rec)
+
+                except Exception as e:
+                    print(f"[StockEngine] Fallback: Error processing {code}: {e}")
+                    continue
+
+                if len(recommendations) >= top_n:
+                    break
+
+            recommendations.sort(key=lambda x: x['score'], reverse=True)
+            print(f"[StockEngine] Fallback: Generated {len(recommendations)} recommendations")
+            return recommendations[:top_n]
+
+        except Exception as e:
+            print(f"[StockEngine] Fallback recommendations failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
 
 # Convenience functions
