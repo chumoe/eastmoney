@@ -31,6 +31,7 @@ class ChatResponse:
     tool_calls: List[ToolCall]
     finish_reason: str  # "stop" or "tool_calls"
     raw_response: Any = None
+    reasoning_content: Optional[str] = None  # For thinking mode models
 
 
 class BaseLLMClient(ABC):
@@ -262,6 +263,9 @@ class OpenAIClient(BaseLLMClient):
             message = response.choices[0].message
             finish_reason = response.choices[0].finish_reason
 
+            # Extract reasoning_content for thinking mode models (o1, etc.)
+            reasoning_content = getattr(message, 'reasoning_content', None)
+
             tool_calls = []
             if message.tool_calls:
                 for tc in message.tool_calls:
@@ -281,7 +285,8 @@ class OpenAIClient(BaseLLMClient):
                 content=message.content,
                 tool_calls=tool_calls,
                 finish_reason="tool_calls" if tool_calls else "stop",
-                raw_response=response
+                raw_response=response,
+                reasoning_content=reasoning_content
             )
 
         except Exception as e:

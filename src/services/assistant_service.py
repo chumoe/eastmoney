@@ -222,6 +222,7 @@ class AssistantService:
         tools = get_tools_for_llm(provider)
 
         tools_used = []
+        reasoning_content = None  # Track reasoning_content for thinking mode models
 
         for iteration in range(self._max_iterations):
             print(f"[Agent Loop] Iteration {iteration + 1}")
@@ -234,6 +235,11 @@ class AssistantService:
             )
 
             print(f"[Agent Loop] finish_reason: {response.finish_reason}, tool_calls: {len(response.tool_calls)}")
+
+            # Capture reasoning_content for thinking mode models (o1, etc.)
+            if response.reasoning_content:
+                reasoning_content = response.reasoning_content
+                print(f"[Agent Loop] Captured reasoning_content ({len(reasoning_content)} chars)")
 
             # Check if we have tool calls
             if response.tool_calls:
@@ -250,21 +256,29 @@ class AssistantService:
                         "success": result.get("success", False)
                     })
 
-                    # Add assistant message with tool call (for OpenAI format)
+                    # Build assistant message with tool call (for OpenAI format)
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.name,
+                                "arguments": json.dumps(tool_call.arguments, ensure_ascii=False)
+                            }
+                        }]
+                    }
+
+                    # Include reasoning_content for thinking mode models
+                    if reasoning_content and provider in ["openai", "openai_compatible"]:
+                        assistant_msg["reasoning_content"] = reasoning_content
+                        reasoning_content = None  # Clear after use
+
+                    messages.append(assistant_msg)
+
+                    # Add tool result message
                     if provider in ["openai", "openai_compatible"]:
-                        messages.append({
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [{
-                                "id": tool_call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_call.name,
-                                    "arguments": json.dumps(tool_call.arguments, ensure_ascii=False)
-                                }
-                            }]
-                        })
-                        # Add tool result message
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
