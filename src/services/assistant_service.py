@@ -256,7 +256,7 @@ class AssistantService:
                         "success": result.get("success", False)
                     })
 
-                    # Build assistant message with tool call (for OpenAI format)
+                    # Build assistant message with tool call (OpenAI format with reasoning_content)
                     assistant_msg = {
                         "role": "assistant",
                         "content": None,
@@ -270,27 +270,21 @@ class AssistantService:
                         }]
                     }
 
-                    # Include reasoning_content for thinking mode models
+                    # Include reasoning_content for thinking mode models (o1, etc.)
+                    # Always include for OpenAI-compatible APIs
                     if reasoning_content and provider in ["openai", "openai_compatible"]:
                         assistant_msg["reasoning_content"] = reasoning_content
                         reasoning_content = None  # Clear after use
 
                     messages.append(assistant_msg)
 
-                    # Add tool result message
-                    if provider in ["openai", "openai_compatible"]:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps(result.get("data") or result, ensure_ascii=False)
-                        })
-                    else:
-                        # Gemini format
-                        messages.append({
-                            "role": "tool",
-                            "name": tool_call.name,
-                            "content": json.dumps(result.get("data") or result, ensure_ascii=False)
-                        })
+                    # Add tool result message with tool_call_id (required by OpenAI API)
+                    tool_result_msg = {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result.get("data") or result, ensure_ascii=False)
+                    }
+                    messages.append(tool_result_msg)
 
                 # Continue the loop to get next response
                 continue
