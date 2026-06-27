@@ -60,13 +60,14 @@ class RecommendationExplainer:
             explanations = cls._generate_stock_explanations(batch, strategy)
 
             for rec, explanation in zip(batch, explanations):
-                rec['explanation'] = explanation
+                _finalize_recommendation(rec, explanation)
                 explained_recs.append(rec)
 
         # Add remaining without LLM explanation
         remaining_start = cls.MAX_CALLS_PER_CYCLE * cls.BATCH_SIZE
         for rec in recommendations[remaining_start:]:
-            rec['explanation'] = cls._generate_fallback_explanation(rec, strategy)
+            explanation = cls._generate_fallback_explanation(rec, strategy)
+            _finalize_recommendation(rec, explanation)
             explained_recs.append(rec)
 
         return explained_recs
@@ -103,12 +104,13 @@ class RecommendationExplainer:
             explanations = cls._generate_fund_explanations(batch, strategy)
 
             for rec, explanation in zip(batch, explanations):
-                rec['explanation'] = explanation
+                _finalize_recommendation(rec, explanation)
                 explained_recs.append(rec)
 
         remaining_start = cls.MAX_CALLS_PER_CYCLE * cls.BATCH_SIZE
         for rec in recommendations[remaining_start:]:
-            rec['explanation'] = cls._generate_fallback_explanation(rec, strategy)
+            explanation = cls._generate_fallback_explanation(rec, strategy)
+            _finalize_recommendation(rec, explanation)
             explained_recs.append(rec)
 
         return explained_recs
@@ -308,13 +310,52 @@ class RecommendationExplainer:
                 explanations = json.loads(json_str)
 
                 if isinstance(explanations, list):
+                    # 处理元素可能是对象的情况（LLM可能返回对象数组而非字符串数组）
+                    result = []
+                    for item in explanations:
+                        if isinstance(item, str):
+                            result.append(item)
+                        elif isinstance(item, dict):
+                            # 尝试从对象中提取文本
+                            text = (
+                                item.get('explanation')
+                                or item.get('reason')
+                                or item.get('analysis')
+                                or item.get('logic')
+                                or item.get('text')
+                                or item.get('description')
+                                or ''
+                            )
+                            if not text and item:
+                                # 如果是对象但没有已知字段，转成字符串
+                                text = json.dumps(item, ensure_ascii=False)
+                            result.append(text)
+                        else:
+                            result.append(str(item))
+
                     # Pad with empty strings if needed
-                    while len(explanations) < expected_count:
-                        explanations.append("暂无详细分析")
-                    return explanations[:expected_count]
+                    while len(result) < expected_count:
+                        result.append("暂无详细分析")
+                    return result[:expected_count]
 
         except json.JSONDecodeError:
             pass
+
+        # Fallback: try to parse as markdown list
+        lines = response.strip().split('\n')
+        text_lines = []
+        for line in lines:
+            line = line.strip()
+            if line.startswith('- ') or line.startswith('* '):
+                text_lines.append(line[2:].strip())
+            elif line and not line.startswith('#') and not line.startswith('```'):
+                text_lines.append(line)
+
+        if text_lines and len(text_lines) >= expected_count // 2:
+            result = text_lines[:expected_count]
+            while len(result) < expected_count:
+                result.append("暂无详细分析")
+            return result
 
         # Fallback: return generic explanations
         return ["暂无详细分析"] * expected_count
@@ -322,9 +363,9 @@ class RecommendationExplainer:
     @classmethod
     def _generate_fallback_explanation(cls, rec: Dict, strategy: str) -> str:
         """Generate a fallback explanation without LLM."""
-        key_factors = rec.get('key_factors', [])
+        key_factors = rec.get('key_factors', rec.get('key_reasons', []))
         score = rec.get('score', 0)
-        confidence = rec.get('confidence', 'medium')
+        confidence = rec.get('confidence', '中等')
 
         if strategy in ['short_term', 'momentum']:
             holding = "短期（7-30天）"
@@ -333,9 +374,16 @@ class RecommendationExplainer:
 
         if key_factors:
             factors_str = '、'.join(key_factors[:3])
-            return f"推荐等级：{confidence}，综合得分{score:.0f}分。主要优势：{factors_str}。建议{holding}持有。"
+            return f"综合得分{score:.0f}分。主要优势：{factors_str}。建议{holding}持有。"
         else:
-            return f"推荐等级：{confidence}，综合得分{score:.0f}分。建议{holding}持有，请结合市场情况决策。"
+            return f"综合得分{score:.0f}分。建议{holding}持有，请结合市场情况决策。"
+
+
+def _finalize_recommendation(rec: Dict, explanation: str) -> Dict:
+    """标准化推荐结果，同时设置explanation和investment_logic两个字段，保持前后端兼容。"""
+    rec['explanation'] = explanation
+    rec['investment_logic'] = explanation
+    return rec
 
 
 # Synchronous wrapper for engine calls
@@ -368,5 +416,6 @@ def explain_recommendations_sync(
         print(f"[LLM Explainer] Failed: {e}, using fallback explanations")
         # Fallback to rule-based explanations
         for rec in recommendations:
-            rec['explanation'] = RecommendationExplainer._generate_fallback_explanation(rec, strategy)
+            explanation = RecommendationExplainer._generate_fallback_explanation(rec, strategy)
+            _finalize_recommendation(rec, explanation)
         return recommendations

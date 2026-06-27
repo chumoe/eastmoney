@@ -183,7 +183,11 @@ class StockRecommendationEngine:
                     'peg_ratio': factors.get('peg_ratio'),
                     'pe_percentile': factors.get('pe_percentile'),
                     'consolidation_score': factors.get('consolidation_score'),
+                    'volume_precursor': factors.get('volume_precursor'),
                     'main_inflow_5d': factors.get('main_inflow_5d'),
+                    'quality_score': factors.get('quality_score'),
+                    'change_pct': factors.get('change_pct'),
+                    'price': factors.get('price'),
                 }
             })
 
@@ -427,6 +431,17 @@ class StockRecommendationEngine:
                     if score < min_score:
                         continue
 
+                    # 计算盘整评分：基于布林带位置，越接近中轨盘整越充分
+                    consolidation_score = round(100 - abs(boll_position - 50) * 1.2, 0)
+                    consolidation_score = max(0, min(100, consolidation_score))
+
+                    # 量能信号评分：基于量比
+                    volume_precursor = round(min(vol_ratio * 50, 100), 0)
+
+                    # 估算质量评分（基于价格稳定性和趋势）
+                    quality_score = round(50 + (100 - latest_rsi) * 0.3 + min(change_pct, 5) * 2, 0)
+                    quality_score = max(0, min(100, quality_score))
+
                     rec = {
                         'code': code,
                         'name': name,
@@ -437,12 +452,21 @@ class StockRecommendationEngine:
                         'time_horizon': '7-15天' if strategy == 'short_term' else '3-6个月',
                         'risk_level': '中等',
                         'key_reasons': reasons[:3],
+                        'investment_logic': f"综合得分{score:.0f}分。{'、'.join(reasons[:3])}。建议{'7-15天' if strategy == 'short_term' else '3-6个月'}持有。",
                         'factors': {
                             'rsi': round(latest_rsi, 2),
                             'macd': round(latest_macd, 4),
                             'boll_position': round(boll_position, 1),
                             'volume_ratio': round(vol_ratio, 2),
                             'change_pct': change_pct,
+                            'price': latest_close,
+                            'consolidation_score': consolidation_score,
+                            'volume_precursor': volume_precursor,
+                            'main_inflow_5d': None,
+                            'quality_score': quality_score,
+                            'roe': None,
+                            'peg_ratio': None,
+                            'pe_percentile': None,
                         },
                         'is_fallback': True,
                     }
