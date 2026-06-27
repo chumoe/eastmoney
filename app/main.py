@@ -48,14 +48,38 @@ async def lifespan(app: FastAPI):
     scheduler_manager.start()
     print("[OK] Scheduler started")
 
-    # Refresh dashboard cache in background
+    # Warm up caches in background (avoid blocking startup)
     try:
         loop = asyncio.get_running_loop()
 
-        async def refresh_cache():
-            from app.core.config import REPORT_DIR
-            from src.analysis.dashboard import DashboardService
+        async def warmup_caches():
+            """
+            后台预热关键缓存，避免首次访问等待。
+            按优先级依次预热：股票行情 > 基金列表 > Dashboard
+            """
+            # 1. 股票实时行情缓存（市场情绪、资金流向等都依赖这个）
+            print("[INFO] Warming up stock spot cache...")
             try:
+                from src.data_sources.akshare_api import get_all_stock_spot_map
+                await loop.run_in_executor(None, get_all_stock_spot_map)
+                print("[OK] Stock spot cache warmed up")
+            except Exception as e:
+                print(f"[WARN] Stock spot cache warmup failed: {e}")
+
+            # 2. 基金列表缓存
+            print("[INFO] Warming up fund list cache...")
+            try:
+                from src.data_sources.akshare_api import get_all_fund_list
+                await loop.run_in_executor(None, get_all_fund_list)
+                print("[OK] Fund list cache warmed up")
+            except Exception as e:
+                print(f"[WARN] Fund list cache warmup failed: {e}")
+
+            # 3. Dashboard 缓存
+            print("[INFO] Warming up dashboard cache...")
+            try:
+                from app.core.config import REPORT_DIR
+                from src.analysis.dashboard import DashboardService
                 await loop.run_in_executor(
                     None,
                     DashboardService(REPORT_DIR).get_full_dashboard
@@ -64,9 +88,11 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"[WARN] Dashboard cache init failed: {e}")
 
-        asyncio.create_task(refresh_cache())
+            print("[OK] All caches warmed up")
+
+        asyncio.create_task(warmup_caches())
     except Exception as e:
-        print(f"[WARN] Could not start background tasks: {e}")
+        print(f"[WARN] Could not start background warmup tasks: {e}")
 
     print("=" * 50)
     print("Server ready to accept connections")

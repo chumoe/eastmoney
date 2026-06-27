@@ -810,49 +810,87 @@ async def get_fund_manager_detail(
 
 # ==================== Market Overview Endpoints ====================
 
+# 市场概览缓存
+_market_overview_lock = threading.Lock()
+_market_indices_cache = None
+_market_indices_ts = 0.0
+_market_sectors_cache = None
+_market_sectors_ts = 0.0
+_market_sentiment_cache = None
+_market_sentiment_ts = 0.0
+_MARKET_OVERVIEW_TTL = 60  # 60秒缓存，交易时段可适当缩短
+
+
+def _is_trading_hours() -> bool:
+    """判断当前是否为交易时段（09:30-15:00）"""
+    now = datetime.now()
+    current_min = now.hour * 60 + now.minute
+    return 570 <= current_min <= 900  # 09:30-15:00
+
 @router.get("/market/indices")
 async def get_market_indices(current_user: User = Depends(get_current_user)):
     """
     Get major market indices (上证、深证、创业板、科创50等).
+    带缓存，避免重复请求。
     """
+    global _market_indices_cache, _market_indices_ts
+
+    ttl = 30 if _is_trading_hours() else 300  # 交易时段30秒，休市5分钟
+
+    # 检查缓存
+    with _market_overview_lock:
+        if _market_indices_cache and (time.time() - _market_indices_ts) < ttl:
+            return _market_indices_cache
+
     try:
         loop = asyncio.get_running_loop()
         df = await loop.run_in_executor(None, ak.stock_zh_index_spot_em)
         
         if df is None or df.empty:
-            return {'indices': [], 'timestamp': datetime.now().isoformat()}
-        
-        # Filter for major indices
-        major_codes = ['000001', '399001', '399006', '000688', '000300', '000016', '000905']
-        indices = []
-        
-        for _, row in df.iterrows():
-            code = _safe_str(row.get('代码'))
-            if code in major_codes:
-                indices.append({
-                    'code': code,
-                    'name': _safe_str(row.get('名称')),
-                    'price': _safe_float(row.get('最新价')),
-                    'change_pct': _safe_float(row.get('涨跌幅')),
-                    'change_val': _safe_float(row.get('涨跌额')),
-                    'volume': _safe_float(row.get('成交量')),
-                    'amount': _safe_float(row.get('成交额')),
-                    'high': _safe_float(row.get('最高')),
-                    'low': _safe_float(row.get('最低')),
-                    'open': _safe_float(row.get('今开')),
-                    'prev_close': _safe_float(row.get('昨收')),
-                })
-        
-        # Sort by predefined order
-        order = {c: i for i, c in enumerate(major_codes)}
-        indices.sort(key=lambda x: order.get(x['code'], 999))
-        
-        return {
-            'indices': indices,
-            'timestamp': datetime.now().isoformat(),
-        }
+            result = {'indices': [], 'timestamp': datetime.now().isoformat()}
+        else:
+            # Filter for major indices
+            major_codes = ['000001', '399001', '399006', '000688', '000300', '000016', '000905']
+            indices = []
+            
+            for _, row in df.iterrows():
+                code = _safe_str(row.get('代码'))
+                if code in major_codes:
+                    indices.append({
+                        'code': code,
+                        'name': _safe_str(row.get('名称')),
+                        'price': _safe_float(row.get('最新价')),
+                        'change_pct': _safe_float(row.get('涨跌幅')),
+                        'change_val': _safe_float(row.get('涨跌额')),
+                        'volume': _safe_float(row.get('成交量')),
+                        'amount': _safe_float(row.get('成交额')),
+                        'high': _safe_float(row.get('最高')),
+                        'low': _safe_float(row.get('最低')),
+                        'open': _safe_float(row.get('今开')),
+                        'prev_close': _safe_float(row.get('昨收')),
+                    })
+            
+            # Sort by predefined order
+            order = {c: i for i, c in enumerate(major_codes)}
+            indices.sort(key=lambda x: order.get(x['code'], 999))
+            
+            result = {
+                'indices': indices,
+                'timestamp': datetime.now().isoformat(),
+            }
+
+        # 写入缓存
+        with _market_overview_lock:
+            _market_indices_cache = result
+            _market_indices_ts = time.time()
+
+        return result
     except Exception as e:
         print(f"Error fetching market indices: {e}")
+        # 出错时返回旧缓存（如果有）
+        with _market_overview_lock:
+            if _market_indices_cache:
+                return _market_indices_cache
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -863,48 +901,86 @@ async def get_market_sectors(
 ):
     """
     Get industry sector performance ranking.
+    带缓存，避免重复请求。
     """
+    global _market_sectors_cache, _market_sectors_ts
+
+    ttl = 60 if _is_trading_hours() else 600  # 交易时段60秒，休市10分钟
+
+    # 检查缓存（注意：limit 不同会影响缓存，这里简单处理）
+    with _market_overview_lock:
+        if _market_sectors_cache and (time.time() - _market_sectors_ts) < ttl:
+            # 从缓存中截取所需数量
+            cached = _market_sectors_cache
+            return {
+                'top_gainers': cached['top_gainers'][:limit],
+                'top_losers': cached['top_losers'][:limit],
+                'timestamp': cached['timestamp'],
+            }
+
     try:
         loop = asyncio.get_running_loop()
         df = await loop.run_in_executor(None, ak.stock_board_industry_name_em)
         
         if df is None or df.empty:
-            return {'sectors': [], 'timestamp': datetime.now().isoformat()}
-        
-        # Sort by change percentage
-        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
-        df_sorted = df.sort_values('涨跌幅', ascending=False)
-        
-        # Get top gainers and losers
-        top_gainers = []
-        for _, row in df_sorted.head(limit).iterrows():
-            top_gainers.append({
-                'name': _safe_str(row.get('板块名称')),
-                'change_pct': _safe_float(row.get('涨跌幅')),
-                'turnover_rate': _safe_float(row.get('换手率')),
-                'leading_stock': _safe_str(row.get('领涨股票')),
-                'leading_change': _safe_float(row.get('领涨股票-涨跌幅')),
-                'total_amount': _safe_float(row.get('总成交额')),
-            })
-        
-        top_losers = []
-        for _, row in df_sorted.tail(limit).iloc[::-1].iterrows():
-            top_losers.append({
-                'name': _safe_str(row.get('板块名称')),
-                'change_pct': _safe_float(row.get('涨跌幅')),
-                'turnover_rate': _safe_float(row.get('换手率')),
-                'leading_stock': _safe_str(row.get('领涨股票')),
-                'leading_change': _safe_float(row.get('领涨股票-涨跌幅')),
-                'total_amount': _safe_float(row.get('总成交额')),
-            })
-        
+            result = {'top_gainers': [], 'top_losers': [], 'timestamp': datetime.now().isoformat()}
+        else:
+            # Sort by change percentage
+            df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
+            df_sorted = df.sort_values('涨跌幅', ascending=False)
+            
+            # Get top gainers and losers (取前30名缓存，方便不同 limit 复用)
+            cache_limit = max(limit, 30)
+            top_gainers = []
+            for _, row in df_sorted.head(cache_limit).iterrows():
+                top_gainers.append({
+                    'name': _safe_str(row.get('板块名称')),
+                    'change_pct': _safe_float(row.get('涨跌幅')),
+                    'turnover_rate': _safe_float(row.get('换手率')),
+                    'leading_stock': _safe_str(row.get('领涨股票')),
+                    'leading_change': _safe_float(row.get('领涨股票-涨跌幅')),
+                    'total_amount': _safe_float(row.get('总成交额')),
+                })
+            
+            top_losers = []
+            for _, row in df_sorted.tail(cache_limit).iloc[::-1].iterrows():
+                top_losers.append({
+                    'name': _safe_str(row.get('板块名称')),
+                    'change_pct': _safe_float(row.get('涨跌幅')),
+                    'turnover_rate': _safe_float(row.get('换手率')),
+                    'leading_stock': _safe_str(row.get('领涨股票')),
+                    'leading_change': _safe_float(row.get('领涨股票-涨跌幅')),
+                    'total_amount': _safe_float(row.get('总成交额')),
+                })
+            
+            result = {
+                'top_gainers': top_gainers,
+                'top_losers': top_losers,
+                'timestamp': datetime.now().isoformat(),
+            }
+
+        # 写入缓存
+        with _market_overview_lock:
+            _market_sectors_cache = result
+            _market_sectors_ts = time.time()
+
+        # 返回指定 limit 的数据
         return {
-            'top_gainers': top_gainers,
-            'top_losers': top_losers,
-            'timestamp': datetime.now().isoformat(),
+            'top_gainers': result['top_gainers'][:limit],
+            'top_losers': result['top_losers'][:limit],
+            'timestamp': result['timestamp'],
         }
     except Exception as e:
         print(f"Error fetching market sectors: {e}")
+        # 出错时返回旧缓存（如果有）
+        with _market_overview_lock:
+            if _market_sectors_cache:
+                cached = _market_sectors_cache
+                return {
+                    'top_gainers': cached['top_gainers'][:limit],
+                    'top_losers': cached['top_losers'][:limit],
+                    'timestamp': cached['timestamp'],
+                }
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -955,8 +1031,17 @@ async def get_southbound_flow(current_user: User = Depends(get_current_user)):
 async def get_market_sentiment(current_user: User = Depends(get_current_user)):
     """
     Get market sentiment indicators (涨跌家数、涨停跌停).
-    使用缓存的股票实时数据，避免每次都拉取全市场5000+股票。
+    带双层缓存：股票行情数据缓存 + 情绪计算结果缓存。
     """
+    global _market_sentiment_cache, _market_sentiment_ts
+
+    ttl = 30 if _is_trading_hours() else 300  # 交易时段30秒，休市5分钟
+
+    # 检查情绪结果缓存
+    with _market_overview_lock:
+        if _market_sentiment_cache and (time.time() - _market_sentiment_ts) < ttl:
+            return _market_sentiment_cache
+
     try:
         sentiment = {
             'up_count': 0,
@@ -1002,9 +1087,18 @@ async def get_market_sentiment(current_user: User = Depends(get_current_user)):
         else:
             print("Stock spot map cache is empty, cannot calculate sentiment")
 
+        # 写入缓存
+        with _market_overview_lock:
+            _market_sentiment_cache = sentiment
+            _market_sentiment_ts = time.time()
+
         return sentiment
     except Exception as e:
         print(f"Error fetching market sentiment: {e}")
+        # 出错时返回旧缓存（如果有）
+        with _market_overview_lock:
+            if _market_sentiment_cache:
+                return _market_sentiment_cache
         raise HTTPException(status_code=500, detail=str(e))
 
 
