@@ -1,0 +1,7 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-BjzJ2ZBdeuVPfcANrXcXYIwt76BdNmZPC601u1HTGz1ORGGF",
+    "ANTHROPIC_BASE_URL": "https://anyrouter.top"
+  },
+  "alwaysThinkingEnabled": true
+}
