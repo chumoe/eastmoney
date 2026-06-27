@@ -127,13 +127,10 @@ class WidgetDataService:
 
     def get_northbound_flow(self, days: int = 5) -> Dict[str, Any]:
         """
-        Get northbound capital flow data (沪深港通资金流向) from TuShare.
+        Get northbound capital flow data (沪深港通资金流向).
 
-        TuShare moneyflow_hsgt returns columns:
-        - trade_date: 交易日期
-        - hgt: 沪股通(百万元)
-        - sgt: 深股通(百万元)
-        - north_money: 北向资金(百万元)
+        Primary: TuShare moneyflow_hsgt
+        Fallback: AkShare
 
         Returns:
             Dict with today's flow, 5-day cumulative, and historical data
@@ -146,69 +143,101 @@ class WidgetDataService:
         if cached:
             return cached
 
-        # Check circuit breaker
-        if circuit_breaker.is_open(config.api_name):
-            return {"error": "Service temporarily unavailable", "latest": None, "cumulative_5d": 0, "history": []}
+        # Try TuShare first (only if circuit breaker is not open)
+        if not circuit_breaker.is_open(config.api_name):
+            if rate_limiter.acquire(config.api_name):
+                try:
+                    end_date = format_date_yyyymmdd()
+                    start_date = format_date_yyyymmdd(datetime.now() - timedelta(days=days + 10))
 
-        # Rate limiting
-        if not rate_limiter.acquire(config.api_name):
-            cached = self._get_cache(cache_key)
-            if cached:
-                return cached
-            return {"error": "Rate limit exceeded", "latest": None, "cumulative_5d": 0, "history": []}
+                    df = get_moneyflow_hsgt(start_date=start_date, end_date=end_date)
 
+                    if df is not None and not df.empty:
+                        df_sorted = df.sort_values('trade_date', ascending=False)
+                        circuit_breaker.record_success(config.api_name)
+
+                        result = {
+                            "latest": None,
+                            "cumulative_5d": 0,
+                            "history": [],
+                            "updated_at": datetime.now().isoformat(),
+                            "source": "tushare"
+                        }
+
+                        if not df_sorted.empty:
+                            latest = df_sorted.iloc[0]
+                            result["latest"] = {
+                                "date": str(latest['trade_date']),
+                                "north_money": round(self._safe_float(latest.get('north_money')) / 100, 2),
+                                "hgt_net": round(self._safe_float(latest.get('hgt')) / 100, 2),
+                                "sgt_net": round(self._safe_float(latest.get('sgt')) / 100, 2),
+                            }
+
+                        recent_5 = df_sorted.head(5)
+                        result["cumulative_5d"] = round(self._safe_float(recent_5['north_money'].fillna(0).sum()) / 100, 2)
+
+                        for _, row in df_sorted.head(days).iterrows():
+                            result["history"].append({
+                                "date": str(row['trade_date']),
+                                "north_money": round(self._safe_float(row.get('north_money')) / 100, 2),
+                            })
+
+                        self._set_cache(cache_key, result, config.ttl)
+                        return result
+
+                    circuit_breaker.record_failure(config.api_name)
+                except Exception as e:
+                    circuit_breaker.record_failure(config.api_name)
+                    print(f"TuShare northbound flow error: {e}")
+
+        # Fallback: AkShare
         try:
-            end_date = format_date_yyyymmdd()
-            start_date = format_date_yyyymmdd(datetime.now() - timedelta(days=days + 10))
+            import akshare as ak
 
-            df = get_moneyflow_hsgt(start_date=start_date, end_date=end_date)
+            end_date = datetime.now().strftime('%Y%m%d')
+            start_date = (datetime.now() - timedelta(days=days + 10)).strftime('%Y%m%d')
 
-            if df is None or df.empty:
-                circuit_breaker.record_failure(config.api_name)
-                return {"error": "No data available from TuShare", "latest": None, "cumulative_5d": 0, "history": []}
+            df = ak.stock_hsgt_hist_em(symbol="北向资金")
+            if df is not None and not df.empty:
+                # Filter by date range
+                df = df.sort_values('日期', ascending=False)
+                df = df.head(days + 5)
 
-            # Process data
-            df_sorted = df.sort_values('trade_date', ascending=False)
-
-            circuit_breaker.record_success(config.api_name)
-
-            result = {
-                "latest": None,
-                "cumulative_5d": 0,
-                "history": [],
-                "updated_at": datetime.now().isoformat(),
-                "source": "tushare"
-            }
-
-            # Latest day
-            # Values are in 百万元 (millions), convert to 亿 (100 millions) by dividing by 100
-            if not df_sorted.empty:
-                latest = df_sorted.iloc[0]
-                result["latest"] = {
-                    "date": str(latest['trade_date']),
-                    "north_money": round(self._safe_float(latest.get('north_money')) / 100, 2),
-                    "hgt_net": round(self._safe_float(latest.get('hgt')) / 100, 2),
-                    "sgt_net": round(self._safe_float(latest.get('sgt')) / 100, 2),
+                result = {
+                    "latest": None,
+                    "cumulative_5d": 0,
+                    "history": [],
+                    "updated_at": datetime.now().isoformat(),
+                    "source": "akshare"
                 }
 
-            # 5-day cumulative (convert from 百万 to 亿)
-            recent_5 = df_sorted.head(5)
-            result["cumulative_5d"] = round(self._safe_float(recent_5['north_money'].fillna(0).sum()) / 100, 2)
+                if not df.empty:
+                    latest = df.iloc[0]
+                    result["latest"] = {
+                        "date": str(latest.get('日期', '')),
+                        "north_money": round(self._safe_float(latest.get('当日净流入')), 2),
+                        "hgt_net": round(self._safe_float(latest.get('沪股通净流入')), 2),
+                        "sgt_net": round(self._safe_float(latest.get('深股通净流入')), 2),
+                    }
 
-            # Historical data
-            for _, row in df_sorted.head(days).iterrows():
-                result["history"].append({
-                    "date": str(row['trade_date']),
-                    "north_money": round(self._safe_float(row.get('north_money')) / 100, 2),
-                })
+                recent_5 = df.head(5)
+                result["cumulative_5d"] = round(
+                    self._safe_float(recent_5['当日净流入'].fillna(0).sum()), 2
+                )
 
-            self._set_cache(cache_key, result, config.ttl)
-            return result
+                for _, row in df.head(days).iterrows():
+                    result["history"].append({
+                        "date": str(row.get('日期', '')),
+                        "north_money": round(self._safe_float(row.get('当日净流入')), 2),
+                    })
+
+                self._set_cache(cache_key, result, config.ttl)
+                return result
 
         except Exception as e:
-            circuit_breaker.record_failure(config.api_name)
-            print(f"TuShare northbound flow error: {e}")
-            return {"error": str(e), "latest": None, "cumulative_5d": 0, "history": []}
+            print(f"AkShare northbound flow error: {e}")
+
+        return {"error": "Service temporarily unavailable", "latest": None, "cumulative_5d": 0, "history": []}
 
 
     def get_industry_flow(self, limit: int = 10) -> Dict[str, Any]:
@@ -485,6 +514,9 @@ class WidgetDataService:
         """
         Get Dragon Tiger list data (龙虎榜).
 
+        Primary: TuShare top_list
+        Fallback: AkShare
+
         Returns:
             Dict with top stocks by trading activity
         """
@@ -496,49 +528,95 @@ class WidgetDataService:
         if cached:
             return cached
 
-        # Check circuit breaker
-        if circuit_breaker.is_open(config.api_name):
-            return {"error": "Service temporarily unavailable", "data": []}
+        # Try TuShare first (only if circuit breaker is not open)
+        if not circuit_breaker.is_open(config.api_name):
+            if rate_limiter.acquire(config.api_name):
+                try:
+                    for days_back in range(0, 6):
+                        trade_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
 
-        # Rate limiting
-        if not rate_limiter.acquire(config.api_name):
-            return {"error": "Rate limit exceeded", "data": []}
+                        df = tushare_call_with_retry('top_list', trade_date=trade_date)
 
+                        if df is not None and not df.empty:
+                            circuit_breaker.record_success(config.api_name)
+
+                            result = {
+                                "trade_date": trade_date,
+                                "data": [],
+                                "updated_at": datetime.now().isoformat(),
+                                "source": "tushare"
+                            }
+
+                            seen_codes = set()
+                            for _, row in df.iterrows():
+                                ts_code = row.get('ts_code', '')
+                                if ts_code in seen_codes:
+                                    continue
+                                seen_codes.add(ts_code)
+
+                                result["data"].append({
+                                    "code": denormalize_ts_code(ts_code),
+                                    "name": row.get('name', ''),
+                                    "close": self._safe_float(row.get('close')),
+                                    "change_pct": self._safe_float(row.get('pct_change')),
+                                    "amount": round(self._safe_float(row.get('amount')) / 100000000, 2),
+                                    "net_amount": round(self._safe_float(row.get('net_amount')) / 100000000, 2),
+                                    "l_buy": round(self._safe_float(row.get('l_buy')) / 100000000, 2),
+                                    "l_sell": round(self._safe_float(row.get('l_sell')) / 100000000, 2),
+                                    "turnover_rate": self._safe_float(row.get('turnover_rate')),
+                                    "reason": row.get('reason', ''),
+                                })
+
+                                if len(result["data"]) >= limit:
+                                    break
+
+                            self._set_cache(cache_key, result, config.ttl)
+                            return result
+
+                    circuit_breaker.record_failure(config.api_name)
+                except Exception as e:
+                    circuit_breaker.record_failure(config.api_name)
+                    print(f"TuShare top list error: {e}")
+
+        # Fallback: AkShare
         try:
+            import akshare as ak
+
             # Try last 5 trading days
             for days_back in range(0, 6):
                 trade_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
 
-                df = tushare_call_with_retry('top_list', trade_date=trade_date)
+                try:
+                    df = ak.stock_lhb_detail_em(start_date=trade_date, end_date=trade_date)
+                except Exception:
+                    continue
 
                 if df is not None and not df.empty:
-                    circuit_breaker.record_success(config.api_name)
-
                     result = {
                         "trade_date": trade_date,
                         "data": [],
-                        "updated_at": datetime.now().isoformat()
+                        "updated_at": datetime.now().isoformat(),
+                        "source": "akshare"
                     }
 
-                    # Group by stock and aggregate
                     seen_codes = set()
                     for _, row in df.iterrows():
-                        ts_code = row.get('ts_code', '')
-                        if ts_code in seen_codes:
+                        code = str(row.get('代码', '')).strip()
+                        if code in seen_codes:
                             continue
-                        seen_codes.add(ts_code)
+                        seen_codes.add(code)
 
                         result["data"].append({
-                            "code": denormalize_ts_code(ts_code),
-                            "name": row.get('name', ''),
-                            "close": self._safe_float(row.get('close')),
-                            "change_pct": self._safe_float(row.get('pct_change')),
-                            "amount": round(self._safe_float(row.get('amount')) / 100000000, 2),
-                            "net_amount": round(self._safe_float(row.get('net_amount')) / 100000000, 2),
-                            "l_buy": round(self._safe_float(row.get('l_buy')) / 100000000, 2),
-                            "l_sell": round(self._safe_float(row.get('l_sell')) / 100000000, 2),
-                            "turnover_rate": self._safe_float(row.get('turnover_rate')),
-                            "reason": row.get('reason', ''),
+                            "code": code,
+                            "name": str(row.get('名称', '')),
+                            "close": self._safe_float(row.get('收盘价')),
+                            "change_pct": self._safe_float(row.get('涨跌幅')),
+                            "amount": round(self._safe_float(row.get('成交额')) / 100000000, 2),
+                            "net_amount": round(self._safe_float(row.get('净买入额')) / 100000000, 2),
+                            "l_buy": round(self._safe_float(row.get('买入金额')) / 100000000, 2),
+                            "l_sell": round(self._safe_float(row.get('卖出金额')) / 100000000, 2),
+                            "turnover_rate": self._safe_float(row.get('换手率')),
+                            "reason": str(row.get('上榜原因', '')),
                         })
 
                         if len(result["data"]) >= limit:
@@ -547,12 +625,10 @@ class WidgetDataService:
                     self._set_cache(cache_key, result, config.ttl)
                     return result
 
-            circuit_breaker.record_failure(config.api_name)
-            return {"error": "No dragon tiger list data available", "data": []}
-
         except Exception as e:
-            circuit_breaker.record_failure(config.api_name)
-            return {"error": str(e), "data": []}
+            print(f"AkShare top list error: {e}")
+
+        return {"error": "Service temporarily unavailable", "data": []}
 
     def get_forex_rates(self) -> Dict[str, Any]:
         """
