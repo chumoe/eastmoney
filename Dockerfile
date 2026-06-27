@@ -5,9 +5,7 @@ FROM --platform=linux/amd64 node:20-alpine AS frontend-builder
 
 WORKDIR /build/web
 
-# 只复制必要的前端文件
-COPY web/package.json web/package-lock.json* web/tsconfig*.json web/vite.config.ts ./
-COPY web/src ./src
+COPY web/ ./
 
 # 安装依赖并构建
 RUN npm install --registry=https://registry.npmmirror.com && \
