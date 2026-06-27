@@ -62,5 +62,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:9000/api/health || exit 1
 
 # 启动命令
-# 注意：源代码通过 volumes 挂载到 /app 目录
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000", "--reload"]

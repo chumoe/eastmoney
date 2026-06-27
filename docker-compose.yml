@@ -1,5 +1,4 @@
 services:
-  # 前后端一体化服务
   app:
     build:
       context: .
@@ -8,18 +7,11 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      # 源代码通过 volumes 挂载，方便修改后自动生效
-      - ./src:/app/src:ro
-      - ./app:/app/app:ro
-      - ./config:/app/config:ro
-      # 数据持久化
-      - ./data:/app/data
-      - ./reports:/app/reports
-      # 环境配置
-      - ./.env:/app/.env:ro
+      - ./:/app
     environment:
       - TZ=Asia/Shanghai
       - DB_FILE_PATH=/app/data/funds.db
+      - PYTHONPATH=/app
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/api/health"]
       interval: 30s
