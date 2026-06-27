@@ -2,10 +2,10 @@
 
 # 颜色定义
 GREEN='\033[0;32m'
-RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== 开始部署 EastMoney 后端服务 (Docker) ===${NC}"
+echo -e "${GREEN}=== 启动 EastMoney 服务 (Docker) ===${NC}"
 
 # 1. 检查 Docker
 if ! command -v docker &> /dev/null; then
@@ -17,10 +17,8 @@ fi
 COMPOSE_CMD=""
 if docker compose version &> /dev/null; then
     COMPOSE_CMD="docker compose"
-    echo "Using Docker Compose V2 (docker compose)"
 elif command -v docker-compose &> /dev/null; then
     COMPOSE_CMD="docker-compose"
-    echo "Using Docker Compose V1 (docker-compose)"
 else
     echo -e "${RED}Docker Compose 未安装。${NC}"
     exit 1
@@ -41,25 +39,22 @@ if [ ! -f "data/funds.db" ]; then
     touch data/funds.db
 fi
 
-# 3. 清理旧环境 (关键步骤，解决 KeyError)
-echo -e "${GREEN}--> 清理旧容器和孤儿容器...${NC}"
-$COMPOSE_CMD down --remove-orphans 2>/dev/null || true
+# 3. 清理旧环境
+echo -e "${GREEN}--> 清理旧容器...${NC}"
+$COMPOSE_CMD down 2>/dev/null || true
 
 # 4. 构建并启动
-echo -e "${GREEN}--> 构建并启动后端容器...${NC}"
-# --force-recreate 强制重新创建容器
-# --build 强制重新构建镜像
-$COMPOSE_CMD up -d --build --force-recreate
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}启动失败！尝试清理镜像后重试...${NC}"
-    $COMPOSE_CMD down
-    docker rmi eastmoney-backend:latest 2>/dev/null
-    $COMPOSE_CMD up -d --build --force-recreate
-fi
+echo -e "${GREEN}--> 构建并启动容器...${NC}"
+$COMPOSE_CMD up -d --build
 
 # 5. 状态检查
 echo -e "${GREEN}--> 容器状态：${NC}"
 $COMPOSE_CMD ps
 
-echo -e "${GREEN}=== 后端服务已在端口 9000 上线 ===${NC}"
+echo ""
+echo -e "${YELLOW}提示：${NC}"
+echo "  - 源代码通过 volumes 挂载，修改代码后会自动重载"
+echo "  - 如需重新构建镜像，运行: $COMPOSE_CMD up -d --build"
+echo "  - 查看日志: $COMPOSE_CMD logs -f"
+echo ""
+echo -e "${GREEN}=== 服务已在端口 9000 上线 ===${NC}"
