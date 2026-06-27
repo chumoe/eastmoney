@@ -227,6 +227,14 @@ class AssistantService:
         for iteration in range(self._max_iterations):
             print(f"[Agent Loop] Iteration {iteration + 1}")
 
+            # Debug: validate messages before API call
+            if iteration > 0:
+                print(f"[Agent Loop] Debug: messages count = {len(messages)}")
+                for i, msg in enumerate(messages):
+                    if msg.get("role") == "tool":
+                        tc_id = msg.get("tool_call_id")
+                        print(f"  messages[{i}] tool, tool_call_id={tc_id!r}, has_tc_id={tc_id is not None}")
+
             # Call LLM with tools
             response: ChatResponse = llm.chat_with_tools(
                 messages=messages,
@@ -237,15 +245,19 @@ class AssistantService:
             print(f"[Agent Loop] finish_reason: {response.finish_reason}, tool_calls: {len(response.tool_calls)}")
 
             # Capture reasoning_content for thinking mode models (o1, etc.)
+            # o1 models require reasoning_content to be passed back when there are tool calls
             if response.reasoning_content:
                 reasoning_content = response.reasoning_content
                 print(f"[Agent Loop] Captured reasoning_content ({len(reasoning_content)} chars)")
 
             # Check if we have tool calls
             if response.tool_calls:
+                print(f"[Agent Loop] Processing {len(response.tool_calls)} tool calls")
+
                 # Execute each tool call
-                for tool_call in response.tool_calls:
+                for idx, tool_call in enumerate(response.tool_calls):
                     print(f"[Agent Loop] Executing tool: {tool_call.name} with args: {tool_call.arguments}")
+                    print(f"[Agent Loop]   -> tool_call.id = {tool_call.id!r}")
 
                     # Execute the tool
                     result = tool_executor.execute(tool_call.name, tool_call.arguments)
@@ -256,7 +268,7 @@ class AssistantService:
                         "success": result.get("success", False)
                     })
 
-                    # Build assistant message with tool call (OpenAI format with reasoning_content)
+                    # Build assistant message with tool call (OpenAI format)
                     assistant_msg = {
                         "role": "assistant",
                         "content": None,
@@ -270,24 +282,42 @@ class AssistantService:
                         }]
                     }
 
-                    # Include reasoning_content for thinking mode models (o1, etc.)
-                    # Always include for OpenAI-compatible APIs
-                    if reasoning_content and provider in ["openai", "openai_compatible"]:
+                    # Add reasoning_content to FIRST tool call assistant message
+                    # OpenAI o1 models require reasoning_content to be echoed back with tool calls
+                    if reasoning_content and idx == 0 and provider in ["openai", "openai_compatible"]:
                         assistant_msg["reasoning_content"] = reasoning_content
-                        reasoning_content = None  # Clear after use
+                        print(f"[Agent Loop] Added reasoning_content to first tool call")
 
                     messages.append(assistant_msg)
+                    print(f"[Agent Loop] Added assistant msg, msg index: {len(messages) - 1}, tool_call.id: {tool_call.id}")
 
-                    # Add tool result message with tool_call_id (required by OpenAI API)
+                    # Build tool result message with tool_call_id (required by OpenAI API)
+                    tool_content = result.get("data") or result
+                    if not isinstance(tool_content, str):
+                        tool_content = json.dumps(tool_content, ensure_ascii=False)
+
                     tool_result_msg = {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result.get("data") or result, ensure_ascii=False)
+                        "tool_call_id": str(tool_call.id),
+                        "content": tool_content
                     }
                     messages.append(tool_result_msg)
+                    print(f"[Agent Loop] Added tool result msg, msg index: {len(messages) - 1}, tool_call_id: {tool_call.id}")
+
+                # Debug: print all message indices and their tool_call_id
+                print(f"[Agent Loop] Messages array after processing tool calls:")
+                for i, msg in enumerate(messages):
+                    if msg.get("role") == "tool":
+                        print(f"  messages[{i}] role=tool, tool_call_id={msg.get('tool_call_id')!r}")
+
+                # Clear reasoning_content after processing all tool calls from this response
+                reasoning_content = None
 
                 # Continue the loop to get next response
                 continue
+
+            # No tool calls - clear reasoning_content since it wasn't used
+            reasoning_content = None
 
             # No tool calls - we have a final response
             if response.content:
