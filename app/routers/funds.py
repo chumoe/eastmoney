@@ -421,12 +421,24 @@ async def get_batch_fund_estimation(
         # Fetch all estimations (cached)
         all_estimations = await loop.run_in_executor(None, _fetch_all_estimations)
 
-        # Fallback: 对 AkShare 未覆盖的基金，用东方财富批量接口查询
+        # Fallback 1: 对 AkShare 未覆盖的基金，先尝试 fundgz 实时估算
         missing_codes = [c for c in code_list if c not in all_estimations]
         if missing_codes:
-            print(f"[MNFInfo] Fetching {len(missing_codes)} funds from batch API...")
+            print(f"[fundgz] Fetching {len(missing_codes)} funds real-time...")
+            for code in missing_codes:
+                try:
+                    est = await loop.run_in_executor(None, _fetch_fundgz_estimation, code)
+                    if est:
+                        all_estimations[code] = est
+                except Exception:
+                    pass
+
+        # Fallback 2: 仍然缺失的，用 MNFInfo 批量接口查实际净值
+        still_missing = [c for c in code_list if c not in all_estimations]
+        if still_missing:
+            print(f"[MNFInfo] Fetching {len(still_missing)} funds batch...")
             try:
-                batch_est = await loop.run_in_executor(None, _fetch_fundmnf_batch, missing_codes)
+                batch_est = await loop.run_in_executor(None, _fetch_fundmnf_batch, still_missing)
                 if batch_est:
                     for code, data in batch_est.items():
                         if code not in all_estimations:
@@ -711,7 +723,15 @@ async def get_fund_estimation(
             'timestamp': datetime.now().isoformat(),
         }
 
-        # AkShare 未覆盖，降级到批量接口
+        # AkShare 未覆盖，先尝试 fundgz 实时估算
+        try:
+            fundgz = await loop.run_in_executor(None, _fetch_fundgz_estimation, code)
+            if fundgz:
+                return fundgz
+        except Exception:
+            pass
+
+        # 仍然没有，用 MNFInfo 查实际净值
         try:
             batch = await loop.run_in_executor(None, _fetch_fundmnf_batch, [code])
             if batch and code in batch:
