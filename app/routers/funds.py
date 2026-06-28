@@ -421,17 +421,18 @@ async def get_batch_fund_estimation(
         # Fetch all estimations (cached)
         all_estimations = await loop.run_in_executor(None, _fetch_all_estimations)
 
-        # Fallback: 对 AkShare 未覆盖的基金逐个请求 fundgz API
+        # Fallback: 对 AkShare 未覆盖的基金，用东方财富批量接口查询
         missing_codes = [c for c in code_list if c not in all_estimations]
         if missing_codes:
-            print(f"[fundgz] Fetching {len(missing_codes)} missing funds from fundgz...")
-            for code in missing_codes:
-                try:
-                    est = await loop.run_in_executor(None, _fetch_fundgz_estimation, code)
-                    if est:
-                        all_estimations[code] = est
-                except Exception:
-                    pass
+            print(f"[MNFInfo] Fetching {len(missing_codes)} funds from batch API...")
+            try:
+                batch_est = await loop.run_in_executor(None, _fetch_fundmnf_batch, missing_codes)
+                if batch_est:
+                    for code, data in batch_est.items():
+                        if code not in all_estimations:
+                            all_estimations[code] = data
+            except Exception as e:
+                print(f"[MNFInfo] Batch fetch failed: {e}")
 
         # Filter for requested codes
         result = []
@@ -710,10 +711,13 @@ async def get_fund_estimation(
             'timestamp': datetime.now().isoformat(),
         }
 
-        # AkShare 未覆盖，降级到 fundgz API
-        fundgz = await loop.run_in_executor(None, _fetch_fundgz_estimation, code)
-        if fundgz:
-            return fundgz
+        # AkShare 未覆盖，降级到批量接口
+        try:
+            batch = await loop.run_in_executor(None, _fetch_fundmnf_batch, [code])
+            if batch and code in batch:
+                return batch[code]
+        except Exception:
+            pass
 
         return {
             'code': code, 'name': None,
@@ -943,6 +947,56 @@ def _fetch_fundgz_estimation(code: str) -> Optional[dict]:
     except Exception as e:
         print(f"[fundgz] Error fetching {code}: {e}")
     return None
+
+
+def _fetch_fundmnf_batch(codes: list) -> dict:
+    """
+    调用东方财富批量基金信息接口（MNFInfo）获取多只基金实时数据。
+    比逐个请求 fundgz 更高效，一次 HTTP 请求可查最多 200 只基金。
+
+    API: https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?Fcodes=...
+    返回 JSON 格式，无需解析 JSONP。
+    """
+    if not codes:
+        return {}
+    try:
+        import httpx, json
+        codes_str = ','.join(codes)
+        url = (
+            f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo"
+            f"?Fcodes={codes_str}&pageIndex=1&pageSize=200"
+            f"&plat=Android&appType=ttjj&product=EFund&Version=1"
+        )
+        resp = httpx.get(url, timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://fundmobapi.eastmoney.com/",
+        })
+        if resp.status_code != 200:
+            print(f"[MNFInfo] HTTP {resp.status_code}")
+            return {}
+
+        data = resp.json()
+        result = {}
+        for item in data.get('Data', []):
+            code = str(item.get('FCODE', ''))
+            if code:
+                result[code] = {
+                    'code': code,
+                    'name': str(item.get('SHORTNAME', '')),
+                    'estimated_nav': _safe_float(item.get('NAV')),
+                    'estimated_change_pct': _safe_float(item.get('NAVCHGRT')),
+                    'prev_nav': _safe_float(item.get('UNITNAV')),
+                    'prev_nav_date': str(item.get('PDATE', '')),
+                    'estimation_time': str(item.get('NAVDATE', '')),
+                    'source': 'fundmnf',
+                }
+        if result:
+            print(f"[MNFInfo] Fetched {len(result)} funds batch")
+        return result
+    except Exception as e:
+        print(f"[MNFInfo] Error: {e}")
+        return {}
+
 
 @router.get("/market/indices")
 async def get_market_indices(current_user: User = Depends(get_current_user)):
