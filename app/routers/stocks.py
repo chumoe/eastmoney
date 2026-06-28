@@ -859,7 +859,14 @@ async def get_stock_quantitative_indicators(code: str, current_user: User = Depe
         return sanitize_for_json(result)
     except Exception as e:
         print(f"Error calculating quant indicators for {code}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "code": code, "name": "", "price": 0, "change_pct": 0,
+            "rsi_14": None, "rsi_24": None,
+            "moving_averages": {"MA5": None, "MA10": None, "MA20": None, "MA60": None},
+            "support_resistance": {"support": None, "resistance": None},
+            "volume_analysis": {"avg_volume": 0, "volume_ratio": 0},
+            "signals": []
+        }
 
 
 def _calculate_rsi(prices, period=14):
