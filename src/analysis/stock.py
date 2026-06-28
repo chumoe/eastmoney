@@ -55,9 +55,9 @@ class StockAnalyst(BaseAnalyst):
         """
         mode_label = "盘前分析" if mode == 'pre' else "盘后复盘"
 
-        # 如果没有股票名称，尝试从行情获取
+        # 如果没有股票名称，尝试从数据库获取
         if not stock_name:
-            stock_name = self._get_stock_name(stock_code)
+            stock_name = self._get_stock_name(stock_code, user_id=user_id)
 
         print(f"\n{'=' * 60}")
         print(f"🔍 {mode_label}: {stock_name} ({stock_code})")
@@ -98,15 +98,50 @@ class StockAnalyst(BaseAnalyst):
             traceback.print_exc()
             return f"## {stock_name or stock_code} {self.FAILURE_SUFFIX}\n\n错误: {str(e)}"
 
-    def _get_stock_name(self, code: str) -> str:
-        """从实时行情获取股票名称"""
+    def _get_stock_name(self, code: str, user_id: int = None) -> str:
+        """从数据库或行情获取股票名称"""
+        # 1. 优先从数据库获取（用户自选股表）
+        if user_id:
+            try:
+                from src.storage.db import get_db_connection
+                conn = get_db_connection()
+                row = conn.execute(
+                    'SELECT name FROM stocks WHERE code = ? AND user_id = ?',
+                    (code, user_id)
+                ).fetchone()
+                conn.close()
+                if row and row['name']:
+                    return str(row['name'])
+            except Exception:
+                pass
+
+        # 2. 从 stock_basic 表获取
         try:
-            from src.data_sources.akshare_api import get_stock_realtime_quote
-            quote = get_stock_realtime_quote(code)
-            if quote and quote.get('名称'):
-                return str(quote['名称'])
+            from src.storage.db import get_db_connection
+            conn = get_db_connection()
+            row = conn.execute(
+                'SELECT name FROM stock_basic WHERE symbol = ?',
+                (code,)
+            ).fetchone()
+            conn.close()
+            if row and row['name']:
+                return str(row['name'])
         except Exception:
             pass
+
+        # 3. 从东方财富实时行情获取（批量查询一只）
+        try:
+            import akshare as ak
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty and '代码' in df.columns:
+                match = df[df['代码'] == code]
+                if not match.empty:
+                    name = match.iloc[0].get('名称', '')
+                    if name and str(name).strip():
+                        return str(name).strip()
+        except Exception:
+            pass
+
         return code
 
     def _save_report(self, code: str, name: str, mode: str, report: str, report_dir: str):

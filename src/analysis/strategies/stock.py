@@ -71,7 +71,27 @@ class StockStrategy(AnalysisStrategy):
         else:
             prompt = self._build_post_market_prompt(data, today)
 
-        report = self.llm.generate_content(prompt)
+        # 检查数据采集结果
+        has_any_data = any(
+            v and v != "N/A" and v != {} and v != [] and v != "" and "error" not in str(v).lower()
+            for v in data.values()
+        ) if data else False
+
+        if not has_any_data:
+            print("  ⚠️  Warning: No valid data collected, LLM may generate poor report")
+
+        try:
+            report = self.llm.generate_content(prompt)
+        except Exception as e:
+            print(f"  ❌ LLM generate_content error: {e}")
+            return f"## {self.stock_name} ({self.stock_code}) 分析失败\n\n错误: {str(e)}\n\n请检查API配置或稍后重试。"
+
+        if not report or len(report.strip()) < 50:
+            print(f"  ⚠️  Warning: LLM returned very short content ({len(report) if report else 0} chars)")
+            # 即使内容很短也返回，不要丢弃
+            if not report:
+                return f"## {self.stock_name} ({self.stock_code}) 分析\n\n（LLM未返回有效内容，请检查API配置或稍后重试）\n\n已采集数据摘要:\n" + "\n".join(f"- {k}: {v}" for k, v in data.items() if v) + "\n\n" + self.get_sources()
+
         return report + self.get_sources()
 
     # ==========================
@@ -84,22 +104,35 @@ class StockStrategy(AnalysisStrategy):
         try:
             quote = get_stock_realtime_quote(self.stock_code)
 
-            # 获取更详细的基本面数据
-            df_info = ak.stock_individual_info_em(symbol=self.stock_code)
-            info_map = dict(zip(df_info['item'], df_info['value'])) if not df_info.empty else {}
+            # 获取更详细的基本面数据（优先用东方财富，失败则用同花顺）
+            info_map = {}
+            try:
+                df_info = ak.stock_individual_info_em(symbol=self.stock_code)
+                if df_info is not None and not df_info.empty and 'item' in df_info.columns and 'value' in df_info.columns:
+                    info_map = dict(zip(df_info['item'], df_info['value']))
+            except Exception as e:
+                print(f"    stock_individual_info_em error: {e}, trying THS...")
+                try:
+                    df_ths = ak.stock_financial_abstract_ths(symbol=self.stock_code, indicator='近每股指标')
+                    if df_ths is not None and not df_ths.empty:
+                        cols = df_ths.columns.tolist()
+                        if '指标名称' in cols and '指标数值' in cols:
+                            info_map = dict(zip(df_ths['指标名称'], df_ths['指标数值']))
+                except Exception as e2:
+                    print(f"    THS fallback also failed: {e2}")
 
             return {
                 "current_price": quote.get('最新价') if quote else 'N/A',
                 "prev_close": quote.get('昨收') if quote else 'N/A',
                 "change_pct": quote.get('涨跌幅') if quote else 'N/A',
-                "pe_ttm": info_map.get("市盈率(动态)", "N/A"),
-                "pb": info_map.get("市净率", "N/A"),
-                "market_cap": info_map.get("总市值", "N/A"),
-                "float_cap": info_map.get("流通市值", "N/A"),
+                "pe_ttm": info_map.get("市盈率(动态)", info_map.get("动态市盈率", 'N/A')),
+                "pb": info_map.get("市净率", info_map.get("PB", 'N/A')),
+                "market_cap": info_map.get("总市值", 'N/A'),
+                "float_cap": info_map.get("流通市值", 'N/A'),
                 "industry": info_map.get("行业", self.sector),
-                "roe": info_map.get("净资产收益率", "N/A"),
-                "total_shares": info_map.get("总股本", "N/A"),
-                "float_shares": info_map.get("流通股", "N/A"),
+                "roe": info_map.get("净资产收益率", 'N/A'),
+                "total_shares": info_map.get("总股本", 'N/A'),
+                "float_shares": info_map.get("流通股", 'N/A'),
             }
         except Exception as e:
             print(f"    Error collecting fundamentals: {e}")
@@ -413,7 +446,7 @@ class StockStrategy(AnalysisStrategy):
             today = datetime.now().strftime("%Y%m%d")
             df = ak.stock_lhb_detail_em(start_date=today, end_date=today)
 
-            if df is not None and not df.empty:
+            if df is not None and not df.empty and '代码' in df.columns:
                 stock_data = df[df['代码'] == self.stock_code]
                 if not stock_data.empty:
                     return stock_data.to_dict('records')
