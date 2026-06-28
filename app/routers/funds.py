@@ -457,7 +457,15 @@ async def get_fund_market_overview(current_user: User = Depends(get_current_user
     """
     Get fund market overview statistics.
     Returns aggregated data about different fund categories.
+    缓存 TTL: 60秒（盘中）或 300秒（盘后）
     """
+    global _market_overview_cache, _market_overview_ts
+    
+    ttl = get_market_cache_ttl(trading_ttl=60, non_trading_ttl=300)
+    with _market_overview_lock:
+        if _market_overview_cache and (time.time() - _market_overview_ts) < ttl:
+            return _market_overview_cache
+    
     try:
         loop = asyncio.get_running_loop()
         
@@ -513,12 +521,21 @@ async def get_fund_market_overview(current_user: User = Depends(get_current_user
             if isinstance(r, dict):
                 overview.append(r)
         
-        return {
+        result = {
             'timestamp': datetime.now().isoformat(),
             'categories': overview,
         }
+        
+        with _market_overview_lock:
+            _market_overview_cache = result
+            _market_overview_ts = time.time()
+        
+        return result
     except Exception as e:
         print(f"Error in fund market overview: {e}")
+        with _market_overview_lock:
+            if _market_overview_cache:
+                return _market_overview_cache
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -815,6 +832,61 @@ _market_sectors_cache = None
 _market_sectors_ts = 0.0
 _market_sentiment_cache = None
 _market_sentiment_ts = 0.0
+_market_overview_cache = None
+_market_overview_ts = 0.0
+
+
+def preload_fund_market_overview():
+    """
+    预加载基金市场概览数据（供启动预热和定时刷新使用）。
+    同步函数，可直接在 executor 中调用。
+    """
+    global _market_overview_cache, _market_overview_ts
+    try:
+        categories = [
+            ("股票型", "股票型基金"),
+            ("混合型", "混合型基金"),
+            ("债券型", "债券型基金"),
+            ("指数型", "指数型基金"),
+            ("QDII", "QDII基金"),
+            ("FOF", "FOF基金"),
+        ]
+        overview = []
+        for fund_type, display_name in categories:
+            try:
+                df = ak.fund_open_fund_rank_em(symbol=fund_type)
+                if df is not None and not df.empty:
+                    total_count = len(df)
+                    avg_return_1m = _safe_float(df['近1月'].astype(float).mean())
+                    avg_return_3m = _safe_float(df['近3月'].astype(float).mean())
+                    avg_return_1y = _safe_float(df['近1年'].astype(float).mean())
+                    df_sorted = df.sort_values('近1月', ascending=False)
+                    top_funds = []
+                    for _, row in df_sorted.head(3).iterrows():
+                        top_funds.append({
+                            'code': _safe_str(row.get('基金代码')),
+                            'name': _safe_str(row.get('基金简称')),
+                            'return_1m': _safe_float(row.get('近1月')),
+                        })
+                    overview.append({
+                        'category': display_name, 'type_key': fund_type,
+                        'total_count': total_count,
+                        'avg_return_1m': round(avg_return_1m, 2),
+                        'avg_return_3m': round(avg_return_3m, 2),
+                        'avg_return_1y': round(avg_return_1y, 2),
+                        'top_performers': top_funds,
+                    })
+            except Exception as e:
+                print(f"[preload] Error fetching {fund_type}: {e}")
+        with _market_overview_lock:
+            _market_overview_cache = {
+                'timestamp': datetime.now().isoformat(),
+                'categories': overview,
+            }
+            _market_overview_ts = time.time()
+        print(f"[preload] Fund market overview cached: {len(overview)} categories")
+    except Exception as e:
+        print(f"[preload] Fund market overview failed: {e}")
 
 @router.get("/market/indices")
 async def get_market_indices(current_user: User = Depends(get_current_user)):

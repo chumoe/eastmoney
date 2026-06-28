@@ -88,6 +88,15 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"[WARN] Dashboard cache init failed: {e}")
 
+            # 4. 基金市场概览缓存（首次打开 funds 页面很慢）
+            print("[INFO] Warming up fund market overview cache...")
+            try:
+                from app.routers.funds import preload_fund_market_overview
+                await loop.run_in_executor(None, preload_fund_market_overview)
+                print("[OK] Fund market overview cache warmed up")
+            except Exception as e:
+                print(f"[WARN] Fund market overview warmup failed: {e}")
+
             print("[OK] All caches warmed up")
 
         asyncio.create_task(warmup_caches())

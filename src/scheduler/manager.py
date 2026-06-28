@@ -89,6 +89,7 @@ class SchedulerManager:
         self.add_factor_computation_job()
         self.add_daily_basic_data_sync_job()
         self.add_cleanup_job()
+        self.add_fund_overview_refresh_job()
 
     def refresh_all_jobs(self):
         """Clear all and reload from DB (All users)"""
@@ -113,6 +114,8 @@ class SchedulerManager:
         self.add_daily_basic_data_sync_job()
         # Re-add cleanup job
         self.add_cleanup_job()
+        # Re-add fund overview refresh job
+        self.add_fund_overview_refresh_job()
 
     def add_dashboard_refresh_job(self):
         """Schedule dashboard cache refresh every 5 minutes"""
@@ -219,6 +222,28 @@ class SchedulerManager:
                 coalesce=True
             )
             print("Scheduled daily basic data sync at 05:00")
+
+    def add_fund_overview_refresh_job(self):
+        """Schedule fund market overview cache refresh every 5 minutes"""
+        job_id = "fund_overview_refresh"
+        if not self.scheduler.get_job(job_id):
+            self.scheduler.add_job(
+                self.refresh_fund_overview_cache,
+                trigger=IntervalTrigger(minutes=5),
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True
+            )
+            print("Scheduled fund overview cache refresh every 5 minutes")
+
+    def refresh_fund_overview_cache(self):
+        """Refresh fund market overview cache in background"""
+        try:
+            from app.routers.funds import preload_fund_market_overview
+            preload_fund_market_overview()
+        except Exception as e:
+            print(f"Error refreshing fund overview cache: {e}")
 
     def run_daily_basic_data_sync(self):
         """Worker to sync fund and stock basic data daily"""
