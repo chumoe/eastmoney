@@ -1626,7 +1626,72 @@ async def get_stock_quant(code: str, current_user: User = Depends(get_current_us
 
     except Exception as e:
         print(f"Error fetching quant data for {code}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Try AkShare fallback for technical factors
+        try:
+            factors_df = compute_technical_factors_from_history(code, 60)
+            if factors_df is not None and not factors_df.empty:
+                result["factors"] = sanitize_data(factors_df.to_dict('records'))
+                latest = factors_df.iloc[0]
+                signals = {
+                    "macd": {"signal": "neutral", "value": None},
+                    "kdj": {"signal": "neutral", "value": None},
+                    "rsi": {"signal": "neutral", "value": None},
+                    "boll": {"signal": "neutral", "value": None}
+                }
+                macd = latest.get('macd')
+                if pd.notna(macd):
+                    signals["macd"]["value"] = round(float(macd), 4)
+                    if pd.notna(latest.get('macd_dif')) and pd.notna(latest.get('macd_dea')):
+                        signals["macd"]["signal"] = "bullish" if float(latest['macd_dif']) > float(latest['macd_dea']) else "bearish"
+                kdj_j = latest.get('kdj_j')
+                if pd.notna(kdj_j):
+                    signals["kdj"]["value"] = round(float(kdj_j), 2)
+                    j_val = float(kdj_j)
+                    if j_val > 100: signals["kdj"]["signal"] = "overbought"
+                    elif j_val < 0: signals["kdj"]["signal"] = "oversold"
+                    elif j_val > 80: signals["kdj"]["signal"] = "bullish"
+                    elif j_val < 20: signals["kdj"]["signal"] = "bearish"
+                rsi = latest.get('rsi_6')
+                if pd.notna(rsi):
+                    signals["rsi"]["value"] = round(float(rsi), 2)
+                    r = float(rsi)
+                    if r > 80: signals["rsi"]["signal"] = "overbought"
+                    elif r < 20: signals["rsi"]["signal"] = "oversold"
+                    elif r > 60: signals["rsi"]["signal"] = "bullish"
+                    elif r < 40: signals["rsi"]["signal"] = "bearish"
+                boll = latest.get('boll_upper')
+                close = latest.get('close')
+                if pd.notna(boll) and pd.notna(close):
+                    close_val = float(close)
+                    upper = float(latest['boll_upper'])
+                    lower = float(latest['boll_lower'])
+                    if pd.notna(lower):
+                        if close_val > upper: signals["boll"]["signal"] = "overbought"
+                        elif close_val < lower: signals["boll"]["signal"] = "oversold"
+                        elif close_val > (upper + lower) / 2: signals["boll"]["signal"] = "bullish"
+                        else: signals["boll"]["signal"] = "bearish"
+                    signals["boll"]["value"] = {"upper": round(upper, 2), "mid": round(float(latest['boll_mid']), 2), "lower": round(lower, 2)}
+                result["signals"] = signals
+                bullish = sum(1 for s in signals.values() if s["signal"] in ["bullish", "oversold"])
+                bearish = sum(1 for s in signals.values() if s["signal"] in ["bearish", "overbought"])
+                if bullish >= 3: result["overall_signal"] = {"direction": "bullish", "strength": "strong", "score": bullish}
+                elif bullish >= 2: result["overall_signal"] = {"direction": "bullish", "strength": "moderate", "score": bullish}
+                elif bearish >= 3: result["overall_signal"] = {"direction": "bearish", "strength": "strong", "score": -bearish}
+                elif bearish >= 2: result["overall_signal"] = {"direction": "bearish", "strength": "moderate", "score": -bearish}
+                else: result["overall_signal"] = {"direction": "neutral", "strength": "weak", "score": bullish - bearish}
+                return result
+        except Exception as fallback_e:
+            print(f"AkShare factor fallback also failed for {code}: {fallback_e}")
+        return {
+            "code": code, "name": "", "factors": [], "chip_data": [],
+            "signals": {
+                "macd": {"signal": "neutral", "value": None},
+                "kdj": {"signal": "neutral", "value": None},
+                "rsi": {"signal": "neutral", "value": None},
+                "boll": {"signal": "neutral", "value": None},
+            },
+            "overall_signal": {"direction": "neutral", "strength": "weak", "score": 0}
+        }
 
 
 @router.get("/{code}/quant/ai-interpret")
