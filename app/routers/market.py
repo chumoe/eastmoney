@@ -120,17 +120,13 @@ def get_market_indices():
 
     # Fallback to AkShare
     try:
+        results = []
+
+        # 1) 全球指数（美股、港股、日股等）
         indices_df = ak.index_global_spot_em()
-
-        target_names = [
-            "上证指数", "深证成指", "创业板指",
-            "恒生指数", "日经225", "纳斯达克", "标普500"
-        ]
-
         if not indices_df.empty:
+            target_names = ["恒生指数", "日经225", "纳斯达克", "标普500"]
             filtered_df = indices_df[indices_df['名称'].isin(target_names)]
-
-            results = []
             for _, row in filtered_df.iterrows():
                 results.append({
                     "name": row['名称'],
@@ -139,8 +135,20 @@ def get_market_indices():
                     "change_pct": float(row['涨跌幅']),
                     "change_val": float(row['涨跌额'])
                 })
-        else:
-            results = []
+
+        # 2) A股指数（上证、深证、创业板等）
+        zh_df = ak.stock_zh_index_spot_em()
+        if zh_df is not None and not zh_df.empty:
+            target_codes = ['000001', '399001', '399006', '000688']
+            zh_filtered = zh_df[zh_df['代码'].isin(target_codes)]
+            for _, row in zh_filtered.iterrows():
+                results.append({
+                    "name": row['名称'],
+                    "code": str(row.get('代码', '')),
+                    "price": float(row['最新价']),
+                    "change_pct": float(row['涨跌幅']),
+                    "change_val": float(row['涨跌额'])
+                })
 
         data = sanitize_data(results)
 
