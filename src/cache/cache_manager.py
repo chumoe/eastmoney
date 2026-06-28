@@ -18,6 +18,8 @@ except ImportError:
 class InMemoryCache:
     """Thread-safe in-memory cache with TTL support."""
 
+    MAX_ENTRIES = 10000  # Maximum cache entries before eviction
+
     def __init__(self):
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
@@ -38,6 +40,9 @@ class InMemoryCache:
     def set(self, key: str, value: Any, ttl: int = None) -> bool:
         """Set value with optional TTL in seconds."""
         with self._lock:
+            # Evict oldest entries when cache is full
+            if len(self._cache) >= self.MAX_ENTRIES:
+                self._evict_lru(ratio=0.2)
             expires_at = time.time() + ttl if ttl else None
             self._cache[key] = {
                 'value': value,
@@ -63,6 +68,17 @@ class InMemoryCache:
         with self._lock:
             self._cache.clear()
             return True
+
+    def _evict_lru(self, ratio: float = 0.2):
+        """Evict oldest entries when cache exceeds MAX_ENTRIES."""
+        target = int(len(self._cache) * ratio)
+        # Sort by created_at and remove oldest
+        sorted_keys = sorted(
+            self._cache.keys(),
+            key=lambda k: self._cache[k].get('created_at', 0)
+        )
+        for k in sorted_keys[:target]:
+            del self._cache[k]
 
     def cleanup_expired(self) -> int:
         """Remove expired entries. Returns count of removed entries."""

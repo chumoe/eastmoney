@@ -88,6 +88,8 @@ class WidgetDataService:
     - Fallback to AkShare when TuShare fails
     """
 
+    MAX_CACHE_ENTRIES = 200  # Maximum cached widget responses
+
     def __init__(self):
         self._cache: Dict[str, tuple] = {}  # key -> (data, expiry_time)
         self._cache_lock = threading.Lock()
@@ -105,6 +107,10 @@ class WidgetDataService:
     def _set_cache(self, key: str, data: Any, ttl: int):
         """Set data in cache with TTL"""
         with self._cache_lock:
+            # Evict oldest when full
+            if len(self._cache) >= self.MAX_CACHE_ENTRIES:
+                oldest_key = min(self._cache.keys(), key=lambda k: self._cache[k][1])
+                del self._cache[oldest_key]
             self._cache[key] = (data, time.time() + ttl)
 
     def _is_market_open(self) -> bool:

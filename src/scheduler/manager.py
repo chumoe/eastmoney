@@ -1,10 +1,12 @@
 import os
+import shutil
+import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 import logging
 import asyncio
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Dict, Optional, Set
 from src.storage.db import (
     get_active_funds, get_fund_by_code, get_active_stocks, get_stock_by_code,
@@ -13,6 +15,7 @@ from src.storage.db import (
 from src.analysis.pre_market import PreMarketAnalyst
 from src.analysis.post_market import PostMarketAnalyst
 from src.analysis.dashboard import DashboardService
+from src.cache import cache_manager
 from src.report_gen import save_report, save_stock_report
 
 logger = logging.getLogger(__name__)
@@ -85,6 +88,7 @@ class SchedulerManager:
         self.add_daily_snapshot_job()
         self.add_factor_computation_job()
         self.add_daily_basic_data_sync_job()
+        self.add_cleanup_job()
 
     def refresh_all_jobs(self):
         """Clear all and reload from DB (All users)"""
@@ -107,6 +111,8 @@ class SchedulerManager:
         self.add_factor_computation_job()
         # Re-add basic data sync job
         self.add_daily_basic_data_sync_job()
+        # Re-add cleanup job
+        self.add_cleanup_job()
 
     def add_dashboard_refresh_job(self):
         """Schedule dashboard cache refresh every 5 minutes"""
@@ -235,6 +241,20 @@ class SchedulerManager:
             print(f"Error syncing stock basic data: {e}")
 
         print("Daily basic data sync completed.")
+
+    def add_cleanup_job(self):
+        """Schedule periodic cache & file cleanup every 2 hours"""
+        job_id = "cleanup"
+        if not self.scheduler.get_job(job_id):
+            self.scheduler.add_job(
+                cleanup_temp_files,
+                trigger=IntervalTrigger(hours=2),
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True
+            )
+            print("Scheduled memory & disk cleanup every 2 hours")
 
     def create_all_portfolio_snapshots(self):
         """Create snapshots for all portfolios (called by scheduler)"""
@@ -551,3 +571,58 @@ class SchedulerManager:
 
 # Global instance
 scheduler_manager = SchedulerManager()
+
+def cleanup_temp_files():
+    """清理临时文件：旧日志(>7天)、旧报告(>30天)"""
+    now = time.time()
+    cleaned = 0
+    
+    # 清理 reports/ 下超过30天的子目录
+    reports_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'reports')
+    if os.path.exists(reports_dir):
+        for entry in os.listdir(reports_dir):
+            entry_path = os.path.join(reports_dir, entry)
+            if os.path.isdir(entry_path):
+                try:
+                    mtime = os.path.getmtime(entry_path)
+                    if now - mtime > 30 * 86400:
+                        shutil.rmtree(entry_path, ignore_errors=True)
+                        cleaned += 1
+                except Exception:
+                    pass
+    
+    # 清理 logs/ 下超过7天的文件
+    logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+    if os.path.exists(logs_dir):
+        for fname in os.listdir(logs_dir):
+            fpath = os.path.join(logs_dir, fname)
+            if os.path.isfile(fpath):
+                try:
+                    mtime = os.path.getmtime(fpath)
+                    if now - mtime > 7 * 86400:
+                        os.remove(fpath)
+                        cleaned += 1
+                except Exception:
+                    pass
+    
+    # 清理报告目录下的 >7天 单文件 .md
+    if os.path.exists(reports_dir):
+        for root, dirs, files in os.walk(reports_dir):
+            for fname in files:
+                if fname.endswith('.md'):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                        if now - mtime > 30 * 86400:
+                            os.remove(fpath)
+                            cleaned += 1
+                    except Exception:
+                        pass
+    
+    # 清理过期缓存
+    cache_cleaned = cache_manager.cleanup_expired()
+    if cache_cleaned > 0:
+        logger.info(f"Cache cleanup: removed {cache_cleaned} expired entries")
+    
+    if cleaned > 0:
+        logger.info(f"File cleanup: removed {cleaned} old files/dirs")
