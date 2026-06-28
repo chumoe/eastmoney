@@ -368,6 +368,24 @@ async def list_stock_reports(current_user: User = Depends(get_current_user)):
     return reports
 
 
+@router.get("/reports/{filename}")
+async def get_stock_report_content(filename: str, current_user: User = Depends(get_current_user)):
+    """Get the content of a specific stock report."""
+    if not filename.endswith(".md"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    user_report_dir = get_user_report_dir(current_user.id)
+    filepath = os.path.join(user_report_dir, "stocks", filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Report not found")
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"content": content, "filename": filename}
+    except Exception as e:
+        print(f"Error reading report {filename}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/reports/{filename}")
 async def delete_stock_report(filename: str, current_user: User = Depends(get_current_user)):
     """Delete a stock analysis report."""
