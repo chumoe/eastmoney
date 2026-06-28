@@ -420,7 +420,19 @@ async def get_batch_fund_estimation(
         
         # Fetch all estimations (cached)
         all_estimations = await loop.run_in_executor(None, _fetch_all_estimations)
-        
+
+        # Fallback: 对 AkShare 未覆盖的基金逐个请求 fundgz API
+        missing_codes = [c for c in code_list if c not in all_estimations]
+        if missing_codes:
+            print(f"[fundgz] Fetching {len(missing_codes)} missing funds from fundgz...")
+            for code in missing_codes:
+                try:
+                    est = await loop.run_in_executor(None, _fetch_fundgz_estimation, code)
+                    if est:
+                        all_estimations[code] = est
+                except Exception:
+                    pass
+
         # Filter for requested codes
         result = []
         for code in code_list:
@@ -655,51 +667,59 @@ async def get_fund_estimation(
         loop = asyncio.get_running_loop()
         df = await loop.run_in_executor(None, ak.fund_value_estimation_em)
         
-        if df is None or df.empty:
-            raise HTTPException(status_code=404, detail="Estimation data not available")
-        
-        # Find the specific fund
-        fund_row = df[df['基金代码'] == code]
-        
-        if fund_row.empty:
-            raise HTTPException(status_code=404, detail=f"Estimation not found for fund {code}")
-        
-        row = fund_row.iloc[0]
-        
-        # AkShare returns dynamic column names with dates
-        columns = df.columns.tolist()
-        est_nav_col = None
-        est_change_col = None
-        prev_nav_col = None
-        
-        for col in columns:
-            if '估算数据-估算值' in col:
-                est_nav_col = col
-            elif '估算数据-估算增长率' in col:
-                est_change_col = col
-            elif col.endswith('-单位净值') and '公布数据' not in col:
-                prev_nav_col = col
-        
-        # Extract date from column name
-        estimation_date = ''
-        if est_nav_col:
-            parts = est_nav_col.split('-估算数据')
-            if parts:
-                estimation_date = parts[0]
-        
-        # Parse estimated change percentage (remove % sign)
-        est_change_str = str(row.get(est_change_col, '0')) if est_change_col else '0'
-        est_change = _safe_float(est_change_str.replace('%', '').strip())
-        
-        return {
-            'code': code,
-            'name': _safe_str(row.get('基金名称')),
+        if df is not None and not df.empty:
+            # Find the specific fund
+            fund_row = df[df['基金代码'] == code]
+            
+            if not fund_row.empty:
+                row = fund_row.iloc[0]
+                
+                # AkShare returns dynamic column names with dates
+                columns = df.columns.tolist()
+                est_nav_col = None
+                est_change_col = None
+                prev_nav_col = None
+                
+                for col in columns:
+                    if '估算数据-估算值' in col:
+                        est_nav_col = col
+                    elif '估算数据-估算增长率' in col:
+                        est_change_col = col
+                    elif col.endswith('-单位净值') and '公布数据' not in col:
+                        prev_nav_col = col
+                
+                # Extract date from column name
+                estimation_date = ''
+                if est_nav_col:
+                    parts = est_nav_col.split('-估算数据')
+                    if parts:
+                        estimation_date = parts[0]
+                
+                # Parse estimated change percentage (remove % sign)
+                est_change_str = str(row.get(est_change_col, '0')) if est_change_col else '0'
+                est_change = _safe_float(est_change_str.replace('%', '').strip())
+                
+                return {
+                    'code': code,
+                    'name': _safe_str(row.get('基金名称')),
             'estimated_nav': _safe_float(row.get(est_nav_col)) if est_nav_col else 0.0,
             'estimated_change_pct': est_change,
             'prev_nav': _safe_float(row.get(prev_nav_col)) if prev_nav_col else 0.0,
             'prev_nav_date': estimation_date,
             'estimation_time': estimation_date,
             'timestamp': datetime.now().isoformat(),
+        }
+
+        # AkShare 未覆盖，降级到 fundgz API
+        fundgz = await loop.run_in_executor(None, _fetch_fundgz_estimation, code)
+        if fundgz:
+            return fundgz
+
+        return {
+            'code': code, 'name': None,
+            'estimated_nav': None, 'estimated_change_pct': None,
+            'prev_nav': None, 'prev_nav_date': None,
+            'estimation_time': None, 'timestamp': datetime.now().isoformat(),
         }
     except HTTPException:
         raise
@@ -887,6 +907,42 @@ def preload_fund_market_overview():
         print(f"[preload] Fund market overview cached: {len(overview)} categories")
     except Exception as e:
         print(f"[preload] Fund market overview failed: {e}")
+
+
+def _fetch_fundgz_estimation(code: str) -> Optional[dict]:
+    """
+    从天天基金 fundgz 接口获取单只基金估算数据。
+    覆盖 AkShare 估算接口没有的基金（如 QDII、部分指数基金等）。
+    
+    API: https://fundgz.1234567.com.cn/js/{code}.js
+    返回 JSONP 格式: jsonpgz({"fundcode":"...","gsz":"...","gszzl":"...","gztime":"..."});
+    """
+    try:
+        import httpx
+        url = f"https://fundgz.1234567.com.cn/js/{code}.js"
+        resp = httpx.get(url, timeout=5, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://fundgz.1234567.com.cn/",
+        })
+        if resp.status_code == 200:
+            text = resp.text.strip()
+            # 解析 JSONP 格式: jsonpgz({...});
+            if text.startswith('jsonpgz(') and text.endswith(');'):
+                import json
+                data = json.loads(text[8:-2])
+                return {
+                    'code': code,
+                    'name': str(data.get('name', '')),
+                    'estimated_nav': _safe_float(data.get('gsz')),
+                    'estimated_change_pct': _safe_float(data.get('gszzl')),
+                    'prev_nav': _safe_float(data.get('dwjz')),
+                    'prev_nav_date': str(data.get('jzrq', '')),
+                    'estimation_time': str(data.get('gztime', '')),
+                    'source': 'fundgz',
+                }
+    except Exception as e:
+        print(f"[fundgz] Error fetching {code}: {e}")
+    return None
 
 @router.get("/market/indices")
 async def get_market_indices(current_user: User = Depends(get_current_user)):
