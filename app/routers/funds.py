@@ -2,7 +2,7 @@
 Fund management endpoints.
 """
 import json
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
 
 from app.models.funds import FundItem, FundCompareRequest
