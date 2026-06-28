@@ -368,6 +368,23 @@ async def list_stock_reports(current_user: User = Depends(get_current_user)):
     return reports
 
 
+@router.delete("/reports/{filename}")
+async def delete_stock_report(filename: str, current_user: User = Depends(get_current_user)):
+    """Delete a stock analysis report."""
+    if not filename.endswith(".md") or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    user_report_dir = get_user_report_dir(current_user.id)
+    filepath = os.path.join(user_report_dir, "stocks", filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Report not found")
+    try:
+        os.remove(filepath)
+        return {"status": "success", "message": f"Report {filename} deleted"}
+    except Exception as e:
+        print(f"Error deleting report {filename}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================================================
 # Market Data Endpoints (公开接口，无需登录)
 # ============================================================================

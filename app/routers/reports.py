@@ -86,6 +86,9 @@ async def get_report(filename: str, current_user: User = Depends(get_current_use
         filepath = os.path.join(user_report_dir, "commodities", filename)
 
     if not os.path.exists(filepath):
+        filepath = os.path.join(user_report_dir, "stocks", filename)
+
+    if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Report not found")
 
     with open(filepath, "r", encoding="utf-8") as f:
